@@ -1,5 +1,16 @@
 # TagGUI
 
+## Murf-Code fork: extra features
+
+This fork of [TagGUI](https://github.com/jhc13/taggui) (based on v1.33.0) adds:
+
+- **LM Studio and Ollama captioning.** Pick *LM Studio (local server)* or *Ollama (local server)* at the top of the Auto-Captioner model list to caption with whatever vision model you have loaded. Your prompt box is sent as the user prompt, with an editable system prompt, server URL, optional model name, max tokens, temperature and a Test Connection button. Reasoning (`<think>`) text is stripped out automatically.
+- **Open File Location.** Right-click an image to open Explorer with that file selected.
+- **Stackable tag filters.** Right-click a tag in All Tags or Image Tags and choose *Add to Filter*, *Exclude from Filter* or *Add to Filter (OR)* to build filters like `tag:"z4ush" AND NOT tag:"dog"`.
+
+To run it, clone this branch, install `requirements.txt` in a Python 3.12 environment, and run `taggui/run_gui.py`. For LM Studio, start its local server with a vision model loaded first.
+
+
 <img src='images/icon.png' alt='TagGUI icon' width='128'>
 
 Cross-platform desktop application for quickly adding and editing image tags
