@@ -4,7 +4,11 @@ from contextlib import redirect_stdout
 import numpy as np
 import torch
 from PIL import Image as PilImage
-from gptqmodel.models import BaseGPTQModel
+try:
+    from gptqmodel.models import BaseGPTQModel
+except ImportError:
+    # gptqmodel is optional (only needed for the 4-bit InternLM model).
+    BaseGPTQModel = object
 from torchvision.transforms import functional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
