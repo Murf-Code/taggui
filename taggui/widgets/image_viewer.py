@@ -520,9 +520,13 @@ class ImageViewer(QWidget):
         self.history_changed.emit()
         mode = label.mode
         self.refresh_after_edit(path)
-        # Stay in the same tool for the next edit.
-        label.mode = mode
+        # A crop ends crop mode; the remove brush stays on for the next
+        # strokes (as in Photoshop).
+        label.mode = MODE_REMOVE if mode == MODE_REMOVE else MODE_VIEW
+        if label.mode == MODE_VIEW:
+            label.setCursor(Qt.CursorShape.ArrowCursor)
         label.reset_edit()
+        label.update()
         self.update_controls()
         if description == 'Remove' and image_editing.last_inpaint_method:
             self.status_label.setText(
@@ -588,5 +592,9 @@ class ImageViewer(QWidget):
                 Path(self.image_label.image_path) == path:
             mode = self.image_label.mode
             self.image_label.load_image(path)
-            self.image_label.mode = mode
+            # Never come back into crop mode after an edit, undo or redo.
+            self.image_label.mode = MODE_VIEW if mode == MODE_CROP else mode
+            if self.image_label.mode == MODE_VIEW:
+                self.image_label.setCursor(Qt.CursorShape.ArrowCursor)
+            self.image_label.update()
         self.image_edited.emit()
