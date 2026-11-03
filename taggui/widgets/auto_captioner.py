@@ -11,9 +11,10 @@ from PySide6.QtWidgets import (QAbstractScrollArea, QDockWidget, QFormLayout,
 
 from auto_captioning.captioning_thread import CaptioningThread
 from auto_captioning.models.local_server import (
-    DEFAULT_LM_STUDIO_URL, DEFAULT_OLLAMA_URL, DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_USER_PROMPT, LM_STUDIO_MODEL_ID, LmStudioBackend,
-    LocalServerError, OLLAMA_MODEL_ID, OllamaBackend, is_local_server_model)
+    DEFAULT_LM_STUDIO_URL, DEFAULT_MAX_IMAGE_SIDE, DEFAULT_OLLAMA_URL,
+    DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT, LM_STUDIO_MODEL_ID,
+    LmStudioBackend, LocalServerError, MAX_IMAGE_SIDE, MIN_IMAGE_SIDE,
+    OLLAMA_MODEL_ID, OllamaBackend, is_local_server_model)
 from auto_captioning.models.wd_tagger import WdTagger
 from auto_captioning.models_list import MODELS, get_model_class
 from dialogs.caption_multiple_images_dialog import CaptionMultipleImagesDialog
@@ -307,6 +308,15 @@ class CaptionSettingsForm(QVBoxLayout):
                 key='local_server_temperature', default=0.6, minimum=0,
                 maximum=2))
         self.local_server_temperature_spin_box.setSingleStep(0.05)
+        self.local_server_max_image_side_spin_box = (
+            FocusedScrollSettingsSpinBox(
+                key='local_server_max_image_side',
+                default=DEFAULT_MAX_IMAGE_SIDE, minimum=MIN_IMAGE_SIDE,
+                maximum=MAX_IMAGE_SIDE))
+        self.local_server_max_image_side_spin_box.setSingleStep(64)
+        self.local_server_max_image_side_spin_box.setToolTip(
+            'Images are downscaled so their longest side is at most this '
+            'many pixels before being sent. Smaller is faster.')
         self.split_tags_check_box = SettingsBigCheckBox(
             key='local_server_split_tags', default=True)
         common_form.addRow('System prompt', self.system_prompt_text_edit)
@@ -316,6 +326,8 @@ class CaptionSettingsForm(QVBoxLayout):
                             self.local_server_max_tokens_spin_box)
         numbers_form.addRow('Temperature',
                             self.local_server_temperature_spin_box)
+        numbers_form.addRow('Max image size (longest side, px)',
+                            self.local_server_max_image_side_spin_box)
         numbers_form.addRow('Split output into tags (comma/line separated)',
                             self.split_tags_check_box)
 
@@ -468,7 +480,9 @@ class CaptionSettingsForm(QVBoxLayout):
                 'max_tokens': self.local_server_max_tokens_spin_box.value(),
                 'temperature':
                     self.local_server_temperature_spin_box.value(),
-                'split_tags': self.split_tags_check_box.isChecked()
+                'split_tags': self.split_tags_check_box.isChecked(),
+                'max_image_side':
+                    self.local_server_max_image_side_spin_box.value()
             },
             'wd_tagger_settings': {
                 'show_probabilities':

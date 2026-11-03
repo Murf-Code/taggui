@@ -25,20 +25,37 @@ LOCAL_SERVER_MODEL_IDS = (LM_STUDIO_MODEL_ID, OLLAMA_MODEL_ID)
 DEFAULT_LM_STUDIO_URL = 'http://localhost:1234'
 DEFAULT_OLLAMA_URL = 'http://localhost:11434'
 DEFAULT_USER_PROMPT = (
-    'Analyze the image and output a comprehensive, comma-separated list of '
-    'e621-style tags. Include ratings (safe, questionable, explicit), '
-    'species, gender/sex characteristics, character names, copyright/source '
-    'if recognizable, and detailed general tags covering clothing, '
-    'expression, pose, anatomy, background, framing, and objects, using '
-    'standard e621 formatting with underscores for multi-word tags. Provide '
-    'only the raw tags without full sentences or conversational filler.')
+    'Tag this image for LoRA training. Output one line of comma-separated e621 tags, in this order:\n'
+    '1. count (solo, duo, trio, group)\n'
+    "2. each character's species, plus anthro or feral for each one\n"
+    '3. sex only if genitals or clear sex traits are visible\n'
+    '4. for each character: fur colours, markings, body type, pose, expression, gaze\n'
+    '5. clothing and accessories, with their colours\n'
+    '6. held objects as "holding X" plus the object, and other props\n'
+    '7. interaction and themes (size difference, romantic, humor)\n'
+    '8. medium (traditional media (artwork), marker (artwork), digital media (artwork))\n'
+    '9. background (white background, simple background, detailed background)\n'
+    'Tag only what is visible. Output the tags only.')
 DEFAULT_SYSTEM_PROMPT = (
-    'You are an expert image tagger for e621-style datasets. Look carefully '
-    'at the image and answer only with what the user asks for. Output a '
-    'single line of comma-separated tags, with no numbering, explanations or '
-    'other text. Do not mention watermarks or signatures.')
-# Longest image side sent to the server. Larger images are downscaled.
-MAX_IMAGE_SIDE = 2048
+    'You are an e621 tagger. Reply with one line of lowercase comma-separated tags, using spaces instead of underscores and no other text.\n'
+    'Rules:\n'
+    '- Use the specific species only, e.g. husky, not wolf, canine or canid. A husky is a husky, never wolf.\n'
+    '- Each tag is a short separate e621 tag, never a phrase or sentence. Species, anthro and feral are separate tags (snow leopard, anthro). Separate tags with commas only. Put quoted text in double quotes.\n'
+    '- Never use: furry, fursona, anthropomorphic, safe, questionable, explicit, rating tags, quality tags, score tags, age tags, hair tags, watermark, signature, artist name, cartoon style.\n'
+    '- Tag every animal character as anthro (stands upright, human-like hands) or feral (animal body, on all fours).\n'
+    '- Use male, female and pairing tags such as male/female only when the sex is clearly visible. Otherwise leave sex out.\n'
+    '- Use looking at viewer only when the eyes meet the viewer. Otherwise use looking at another, looking up, looking down, looking away or side glance.\n'
+    '- Paper, ink, marker or pencil texture means traditional media (artwork). Only clean digital rendering means digital media (artwork).\n'
+    '- Pairing tags use a slash: male/male, male/female, female/female.\n'
+    '- A biped with a human-like torso and paws used as hands is anthro, not feral.\n'
+    '- Tag penis shape by what is visible (canine penis, equine penis), tag knot separately when visible, and use pussy instead of vulva.\n'
+    '- For short visible text, add text and text reads "..." with the words exactly as written.\n'
+    '- Never guess. If unsure, leave the tag out.')
+# Default longest image side sent to the server (the "Max image size"
+# setting). Larger images are downscaled; smaller ones are sent as-is.
+DEFAULT_MAX_IMAGE_SIDE = 720
+MIN_IMAGE_SIDE = 256
+MAX_IMAGE_SIDE = 4096
 
 
 def is_local_server_model(model_id: str) -> bool:
@@ -60,9 +77,26 @@ def strip_think(text: str) -> str:
 
 
 def clean_tag_list(text: str, separator: str) -> str:
-    """Normalize a comma/newline-separated tag list."""
+    """Normalize a model reply into one tag list.
+
+    Commas, semicolons and newlines all separate tags (commas and semicolons
+    inside a double-quoted string such as text reads "a, b" do not).
+    text reads '...' is rewritten to text reads "...". Tags are stripped,
+    and empty tags and duplicates are dropped, keeping the first occurrence.
+    """
     text = text.strip().strip('`').strip()
-    parts = re.split(r'[,\n]+', text)
+    text = re.sub(r"(text reads\s*)'([^\n]*?)'(?=\s*(?:[,;\n]|$))",
+                  r'\1"\2"', text, flags=re.IGNORECASE)
+    parts, current, in_quotes = [], [], False
+    for char in text:
+        if char == '"':
+            in_quotes = not in_quotes
+        elif char == '\n' or (char in ',;' and not in_quotes):
+            parts.append(''.join(current))
+            current, in_quotes = [], False
+            continue
+        current.append(char)
+    parts.append(''.join(current))
     tags = []
     seen = set()
     for part in parts:
@@ -76,7 +110,8 @@ def clean_tag_list(text: str, separator: str) -> str:
     return separator.join(tags)
 
 
-def encode_image(path, max_side: int = MAX_IMAGE_SIDE) -> str:
+def encode_image(path, max_side: int = DEFAULT_MAX_IMAGE_SIDE) -> str:
+    max_side = max(MIN_IMAGE_SIDE, min(int(max_side), MAX_IMAGE_SIDE))
     pil_image = PilImage.open(path)
     pil_image = exif_transpose(pil_image)
     pil_image = pil_image.convert('RGB')
@@ -267,6 +302,8 @@ class LocalServerModel(AutoCaptioningModel):
         self.max_tokens = server_settings.get('max_tokens', 1024)
         self.temperature = server_settings.get('temperature', 0.7)
         self.split_tags = server_settings.get('split_tags', True)
+        self.max_image_side = server_settings.get(
+            'max_image_side', DEFAULT_MAX_IMAGE_SIDE)
 
     def get_error_message(self) -> str | None:
         if not self.backend.base_url:
@@ -296,7 +333,7 @@ class LocalServerModel(AutoCaptioningModel):
 
     def get_model_inputs(self, image_prompt: str, image: Image) -> dict:
         try:
-            image_b64 = encode_image(image.path)
+            image_b64 = encode_image(image.path, self.max_image_side)
         except OSError as error:
             # Let the captioning thread skip unreadable images.
             from PIL import UnidentifiedImageError

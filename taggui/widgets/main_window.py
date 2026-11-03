@@ -11,7 +11,7 @@ from transformers import AutoTokenizer
 from dialogs.batch_reorder_tags_dialog import BatchReorderTagsDialog
 from dialogs.find_and_replace_dialog import FindAndReplaceDialog
 from dialogs.settings_dialog import SettingsDialog
-from models.image_list_model import ImageListModel
+from models.image_list_model import ImageListModel, Scope
 from models.image_tag_list_model import ImageTagListModel
 from models.proxy_image_list_model import ProxyImageListModel
 from models.tag_counter_model import TagCounterModel
@@ -21,7 +21,8 @@ from utils.key_press_forwarder import KeyPressForwarder
 from utils.filter_text import extend_filter_text
 from utils.settings import DEFAULT_SETTINGS, get_settings, get_tag_separator
 from utils.shortcut_remover import ShortcutRemover
-from utils.utils import get_resource_path, pluralize
+from utils.utils import (get_confirmation_dialog_reply, get_resource_path,
+                         pluralize)
 from widgets.all_tags_editor import AllTagsEditor
 from widgets.auto_captioner import AutoCaptioner
 from widgets.image_list import ImageList
@@ -510,6 +511,35 @@ class MainWindow(QMainWindow):
             self.extend_image_list_filter_text))
         self.image_tags_editor.tag_input_box.tags_addition_requested.connect(
             self.image_list_model.add_tags)
+        image_tags_list = self.image_tags_editor.image_tags_list
+        image_tags_list.selected_image_count_getter = lambda: len(
+            self.image_list.get_selected_image_indices())
+        image_tags_list.multi_image_tags_removal_requested.connect(
+            self.remove_tags_from_selected_images)
+
+    @Slot(list)
+    def remove_tags_from_selected_images(self, tags: list[str]):
+        """Remove tags from the selected images that have them, after
+        confirmation."""
+        selected_images = self.image_list.list_view.get_selected_images()
+        affected_count = sum(
+            1 for image in selected_images
+            if any(tag in image.tags for tag in tags))
+        if not affected_count:
+            return
+        if len(tags) == 1:
+            tag_text = f'"{tags[0]}"'
+        elif len(tags) < 10:
+            tag_text = ', '.join(f'"{tag}"' for tag in tags)
+        else:
+            tag_text = f'{len(tags)} tags'
+        reply = get_confirmation_dialog_reply(
+            title=f'Remove {pluralize("Tag", len(tags))}',
+            question=f'Remove {tag_text} from {affected_count} selected '
+                     f'{pluralize("image", affected_count)}?')
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.image_list_model.delete_tags(tags, scope=Scope.SELECTED_IMAGES)
 
     @Slot()
     def set_image_list_filter_text(self, selected_tag: str):
@@ -553,6 +583,9 @@ class MainWindow(QMainWindow):
             self.add_tag_to_selected_images)
         self.all_tags_editor.all_tags_list.tags_deletion_requested.connect(
             self.image_list_model.delete_tags)
+        (self.all_tags_editor.all_tags_list
+         .selected_images_tags_deletion_requested.connect(
+            self.remove_tags_from_selected_images))
         self.all_tags_editor.all_tags_list.tags_deletion_requested.connect(
             self.image_list.filter_line_edit.clear)
         self.all_tags_editor.visibilityChanged.connect(

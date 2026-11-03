@@ -95,10 +95,14 @@ class TagInputBox(QLineEdit):
 class ImageTagsList(QListView):
     # The tag and the mode (`and`, `not` or `or`).
     image_list_filter_extension_requested = Signal(str, str)
+    # Tags to remove from every selected image (multi-image selection).
+    multi_image_tags_removal_requested = Signal(list)
 
     def __init__(self, image_tag_list_model: QStringListModel):
         super().__init__()
         self.image_tag_list_model = image_tag_list_model
+        # Set by the main window; returns the number of selected images.
+        self.selected_image_count_getter = None
         self.setModel(self.image_tag_list_model)
         self.setItemDelegate(TextEditItemDelegate(self))
         self.setSelectionMode(
@@ -113,7 +117,22 @@ class ImageTagsList(QListView):
         tag = index.data(Qt.ItemDataRole.EditRole)
         menu = build_tag_filter_menu(
             self, tag, self.image_list_filter_extension_requested.emit)
+        if self.get_selected_image_count() > 1:
+            selected_tags = [selected_index.data(Qt.ItemDataRole.EditRole)
+                             for selected_index in self.selectedIndexes()]
+            tags = selected_tags if tag in selected_tags else [tag]
+            menu.addSeparator()
+            remove_action = menu.addAction(
+                f'Remove from {self.get_selected_image_count()} '
+                f'Selected Images')
+            remove_action.triggered.connect(
+                lambda: self.multi_image_tags_removal_requested.emit(tags))
         menu.exec(event.globalPos())
+
+    def get_selected_image_count(self) -> int:
+        if self.selected_image_count_getter is None:
+            return 1
+        return self.selected_image_count_getter()
 
     def keyPressEvent(self, event: QKeyEvent):
         """
@@ -124,6 +143,12 @@ class ImageTagsList(QListView):
             return
         rows_to_remove = [index.row() for index in self.selectedIndexes()]
         if not rows_to_remove:
+            return
+        if self.get_selected_image_count() > 1:
+            # Remove the tags from all selected images that have them.
+            tag_list = self.image_tag_list_model.stringList()
+            tags = list(dict.fromkeys(tag_list[row] for row in rows_to_remove))
+            self.multi_image_tags_removal_requested.emit(tags)
             return
         remaining_tags = [tag for i, tag
                           in enumerate(self.image_tag_list_model.stringList())

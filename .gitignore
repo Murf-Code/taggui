@@ -161,3 +161,8 @@ cython_debug/
 
 .vscode/
 test/
+
+# Local backups and models
+*.bak
+*.pt
+requirements-local.txt

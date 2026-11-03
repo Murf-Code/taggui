@@ -118,6 +118,12 @@ class ImageListModel(QAbstractListModel):
             image_suffixes.append(suffix)
         image_paths = {path for path in file_paths
                        if path.suffix.lower() in image_suffixes}
+        # Hide mask files saved by OneTrainer/Fizgig (e.g. name-masklabel.png).
+        if settings.value('hide_mask_images', defaultValue=True, type=bool):
+            mask_stem_suffixes = ('-masklabel', '_masklabel', '-mask', '_mask')
+            image_paths = {path for path in image_paths
+                           if not path.stem.lower().endswith(
+                               mask_stem_suffixes)}
         # Comparing paths is slow on some systems, so convert the paths to
         # strings.
         text_file_path_strings = {str(path) for path in file_paths

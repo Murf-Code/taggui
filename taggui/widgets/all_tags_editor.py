@@ -34,6 +34,7 @@ class AllTagsList(QListView):
     image_list_filter_requested = Signal(str)
     tag_addition_requested = Signal(str)
     tags_deletion_requested = Signal(list)
+    selected_images_tags_deletion_requested = Signal(list)
     # The tag and the mode (`and`, `not` or `or`).
     image_list_filter_extension_requested = Signal(str, str)
 
@@ -71,6 +72,16 @@ class AllTagsList(QListView):
         tag = index.data(Qt.ItemDataRole.EditRole)
         menu = build_tag_filter_menu(
             self, tag, self.image_list_filter_extension_requested.emit)
+        # Remove the tag(s) only from the images selected in the image list.
+        selected_tags = [selected_index.data(Qt.ItemDataRole.EditRole)
+                         for selected_index in self.selectedIndexes()]
+        tags = selected_tags if tag in selected_tags else [tag]
+        menu.addSeparator()
+        label = (f'Remove "{tag}" from Selected Images' if len(tags) == 1
+                 else f'Remove {len(tags)} Tags from Selected Images')
+        remove_action = menu.addAction(label)
+        remove_action.triggered.connect(
+            lambda: self.selected_images_tags_deletion_requested.emit(tags))
         menu.exec(event.globalPos())
 
     def keyPressEvent(self, event: QKeyEvent):

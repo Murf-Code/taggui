@@ -7,6 +7,12 @@ This fork of [TagGUI](https://github.com/jhc13/taggui) (based on v1.33.0) adds:
 - **LM Studio and Ollama captioning.** Pick *LM Studio (local server)* or *Ollama (local server)* at the top of the Auto-Captioner model list to caption with whatever vision model you have loaded. Your prompt box is sent as the user prompt, with an editable system prompt, server URL, optional model name, max tokens, temperature and a Test Connection button. Reasoning (`<think>`) text is stripped out automatically.
 - **Open File Location.** Right-click an image to open Explorer with that file selected.
 - **Stackable tag filters.** Right-click a tag in All Tags or Image Tags and choose *Add to Filter*, *Exclude from Filter* or *Add to Filter (OR)* to build filters like `tag:"z4ush" AND NOT tag:"dog"`.
+- **Better local-server captioning defaults.** New default tagging prompts, a *Max image size* setting (default 720 px on the longest side) for faster captions, and cleanup of semicolons, quotes and duplicate tags.
+- **Mask files hidden.** OneTrainer/Fizgig mask images (`name-masklabel.png`, `-mask`, `_mask`) are skipped when loading a folder.
+- **Remove tags from selected images.** With several images selected, deleting a tag in Image Tags (or right-click *Remove from Selected Images*, also in All Tags) removes it from every selected image that has it, after a confirmation. Undoable.
+- **Crop tool (C).** Drag the edges or corners in the image viewer, then Enter or *Apply* to overwrite the image; Esc cancels.
+- **Remove brush (J).** Paint over something (red overlay, size with `[`/`]` or the mouse wheel), then Enter to fill it in with LaMa on the GPU (OpenCV fallback). The big-lama model downloads on first use to `%LOCALAPPDATA%\taggui\models`. Loops close and the hole grows slightly, as in PhotoCraft's Remove Tool.
+- **Image edit undo.** Ctrl+Z with the image focused (or *Undo Edit*) restores the file before the last crop or removal.
 
 To run it, clone this branch, install `requirements.txt` in a Python 3.12 environment, and run `taggui/run_gui.py`. For LM Studio, start its local server with a vision model loaded first.
 
