@@ -13,6 +13,7 @@ from auto_captioning.models.llava_next import (LlavaNext34b, LlavaNextMistral,
                                                LlavaNextVicuna)
 from auto_captioning.models.moondream import Moondream1, Moondream2
 from auto_captioning.models.phi_3_vision import Phi3Vision
+from auto_captioning.models.jtp3_tagger import JTP3_MODEL_ID, Jtp3HydraTagger
 from auto_captioning.models.wd_tagger import WdTagger
 from auto_captioning.models.xcomposer2 import Xcomposer2, Xcomposer2_4khd
 
@@ -41,6 +42,7 @@ MODELS = [
     'xtuner/llava-llama-3-8b-v1_1-transformers',
     'vikhyatk/moondream2',
     'vikhyatk/moondream1',
+    JTP3_MODEL_ID,
     'SmilingWolf/wd-eva02-large-tagger-v3',
     'SmilingWolf/wd-vit-large-tagger-v3',
     'SmilingWolf/wd-swinv2-tagger-v3',
@@ -72,6 +74,8 @@ def get_model_class(model_id: str) -> type[AutoCaptioningModel]:
         return LmStudioModel
     if model_id == OLLAMA_MODEL_ID:
         return OllamaModel
+    if model_id == JTP3_MODEL_ID:
+        return Jtp3HydraTagger
     lowercase_model_id = model_id.lower()
     if 'cogvlm2' in lowercase_model_id:
         return Cogvlm2

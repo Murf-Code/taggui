@@ -13,6 +13,7 @@ This fork of [TagGUI](https://github.com/jhc13/taggui) (based on v1.33.0) adds:
 - **Crop tool (C).** Drag the edges or corners in the image viewer, then Enter or *Apply* to overwrite the image; Esc cancels.
 - **Remove brush (J).** Paint over something (red overlay, size with `[`/`]` or the mouse wheel), then Enter to fill it in with LaMa on the GPU (OpenCV fallback). The big-lama model downloads on first use to `%LOCALAPPDATA%\taggui\models`. Loops close and the hole grows slightly, as in PhotoCraft's Remove Tool.
 - **Image edit undo.** Ctrl+Z with the image focused (or *Undo Edit*) restores the file before the last crop or removal.
+- **JTP-3 Hydra tagger.** RedRocket's e621 tagger (Apache-2.0) in the Auto-Captioner list, run locally on the GPU with the WD tagger settings (minimum score, maximum tags, tags to exclude). Uses an existing local copy (Fizgig's, or `%LOCALAPPDATA%\taggui\models\jtp-3-hydra`, or `TAGGUI_JTP3_DIR`) or downloads it once.
 
 To run it, clone this branch, install `requirements.txt` in a Python 3.12 environment, and run `taggui/run_gui.py`. For LM Studio, start its local server with a vision model loaded first.
 

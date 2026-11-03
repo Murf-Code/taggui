@@ -393,7 +393,7 @@ class CaptionSettingsForm(QVBoxLayout):
             self.toggle_advanced_settings_form_button,
             self.advanced_settings_form_container
         ]
-        is_wd_tagger_model = get_model_class(model_id) == WdTagger
+        is_wd_tagger_model = issubclass(get_model_class(model_id), WdTagger)
         for widget in wd_tagger_widgets:
             widget.setVisible(is_wd_tagger_model)
         for widget in non_wd_tagger_widgets:
@@ -426,7 +426,7 @@ class CaptionSettingsForm(QVBoxLayout):
     @Slot(str)
     def set_load_in_4_bit_visibility(self, device: str):
         model_id = self.model_combo_box.currentText()
-        is_wd_tagger_model = get_model_class(model_id) == WdTagger
+        is_wd_tagger_model = issubclass(get_model_class(model_id), WdTagger)
         if is_wd_tagger_model or is_local_server_model(model_id):
             self.load_in_4_bit_container.setVisible(False)
             return
