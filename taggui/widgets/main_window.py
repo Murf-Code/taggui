@@ -15,6 +15,7 @@ from models.image_list_model import ImageListModel, Scope
 from models.image_tag_list_model import ImageTagListModel
 from models.proxy_image_list_model import ProxyImageListModel
 from models.tag_counter_model import TagCounterModel
+from utils import edit_history
 from utils.big_widgets import BigPushButton
 from utils.image import Image
 from utils.key_press_forwarder import KeyPressForwarder
@@ -326,11 +327,12 @@ class MainWindow(QMainWindow):
 
         edit_menu = menu_bar.addMenu('Edit')
         self.undo_action.setShortcut(QKeySequence('Ctrl+Z'))
-        self.undo_action.triggered.connect(self.image_list_model.undo)
+        self.undo_action.triggered.connect(self.undo_any)
         self.undo_action.setDisabled(True)
         edit_menu.addAction(self.undo_action)
-        self.redo_action.setShortcut(QKeySequence('Ctrl+Y'))
-        self.redo_action.triggered.connect(self.image_list_model.redo)
+        self.redo_action.setShortcuts([QKeySequence('Ctrl+Y'),
+                                       QKeySequence('Ctrl+Shift+Z')])
+        self.redo_action.triggered.connect(self.redo_any)
         self.redo_action.setDisabled(True)
         edit_menu.addAction(self.redo_action)
         find_and_replace_action = QAction('Find and Replace...', parent=self)
@@ -381,17 +383,69 @@ class MainWindow(QMainWindow):
         help_menu.addAction(open_github_repository_action)
 
     @Slot()
+    def next_history_target(self, is_undo: bool):
+        """Which history (tags or image edits) Ctrl+Z / Ctrl+Y acts on: the
+        most recent one. Returns (kind, action name) or None."""
+        tag_stack = (self.image_list_model.undo_stack if is_undo
+                     else self.image_list_model.redo_stack)
+        candidates = []
+        if tag_stack:
+            candidates.append((tag_stack[-1].seq, 'tags',
+                               tag_stack[-1].action_name))
+        image_top = (self.image_viewer.top_undo() if is_undo
+                     else self.image_viewer.top_redo())
+        if image_top:
+            candidates.append((image_top[0], 'image', image_top[1]))
+        if not candidates:
+            return None
+        _, kind, name = max(candidates)
+        return kind, name
+
+    @Slot()
+    def undo_any(self):
+        label = self.image_viewer.image_label
+        if label.has_pending_edit():
+            # First Ctrl+Z discards an unapplied crop box or brush strokes.
+            label.reset_edit()
+            label.update()
+            return
+        target = self.next_history_target(is_undo=True)
+        if target is None:
+            return
+        if target[0] == 'image':
+            self.image_viewer.undo_edit()
+        else:
+            self.image_list_model.undo()
+        self.update_undo_and_redo_actions()
+
+    @Slot()
+    def redo_any(self):
+        target = self.next_history_target(is_undo=False)
+        if target is None:
+            return
+        if target[0] == 'image':
+            self.image_viewer.redo_edit()
+        else:
+            self.image_list_model.redo()
+        self.update_undo_and_redo_actions()
+
+    def handle_new_edit(self, source: str):
+        # A new image edit makes tag redo meaningless.
+        if source == 'image' and self.image_list_model.redo_stack:
+            self.image_list_model.redo_stack.clear()
+        self.update_undo_and_redo_actions()
+
     def update_undo_and_redo_actions(self):
-        if self.image_list_model.undo_stack:
-            undo_action_name = self.image_list_model.undo_stack[-1].action_name
-            self.undo_action.setText(f'Undo "{undo_action_name}"')
+        undo_target = self.next_history_target(is_undo=True)
+        if undo_target:
+            self.undo_action.setText(f'Undo "{undo_target[1]}"')
             self.undo_action.setDisabled(False)
         else:
             self.undo_action.setText('Undo')
             self.undo_action.setDisabled(True)
-        if self.image_list_model.redo_stack:
-            redo_action_name = self.image_list_model.redo_stack[-1].action_name
-            self.redo_action.setText(f'Redo "{redo_action_name}"')
+        redo_target = self.next_history_target(is_undo=False)
+        if redo_target:
+            self.redo_action.setText(f'Redo "{redo_target[1]}"')
             self.redo_action.setDisabled(False)
         else:
             self.redo_action.setText('Redo')
@@ -448,6 +502,9 @@ class MainWindow(QMainWindow):
             self.image_tags_editor.reload_image_tags_if_changed)
         self.image_list_model.update_undo_and_redo_actions_requested.connect(
             self.update_undo_and_redo_actions)
+        self.image_viewer.history_changed.connect(
+            self.update_undo_and_redo_actions)
+        edit_history.on_new_edit(self.handle_new_edit)
         # Rows are inserted or removed from the proxy image list model when the
         # filter is changed.
         self.proxy_image_list_model.rowsInserted.connect(

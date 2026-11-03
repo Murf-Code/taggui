@@ -2,7 +2,7 @@ import random
 import re
 import sys
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -13,6 +13,7 @@ from PySide6.QtCore import (QAbstractListModel, QModelIndex, QSize, Qt, Signal,
 from PySide6.QtGui import QIcon, QImageReader, QPixmap
 from PySide6.QtWidgets import QMessageBox
 
+from utils import edit_history
 from utils.image import Image
 from utils.settings import DEFAULT_SETTINGS, get_settings
 from utils.utils import get_confirmation_dialog_reply, pluralize
@@ -39,6 +40,8 @@ class HistoryItem:
     action_name: str
     tags: list[list[str]]
     should_ask_for_confirmation: bool
+    # Position in the shared tag/image-edit history.
+    seq: int = field(default_factory=edit_history.next_seq)
 
 
 class Scope(str, Enum):
@@ -174,6 +177,7 @@ class ImageListModel(QAbstractListModel):
         self.undo_stack.append(HistoryItem(action_name, tags,
                                            should_ask_for_confirmation))
         self.redo_stack.clear()
+        edit_history.new_edit('tags')
         self.update_undo_and_redo_actions_requested.emit()
 
     def write_image_tags_to_disk(self, image: Image):

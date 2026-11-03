@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel,
                                QSpinBox, QVBoxLayout, QWidget)
 
 from models.proxy_image_list_model import ProxyImageListModel
-from utils import image_editing
+from utils import edit_history, image_editing
 from utils.image import Image
 
 MODE_VIEW, MODE_CROP, MODE_REMOVE = 'view', 'crop', 'remove'
@@ -296,10 +296,6 @@ class ImageLabel(QWidget):
     def event(self, event):
         # Take these keys before the window's shortcuts (Ctrl+Z is tag undo).
         if event.type() == QEvent.Type.ShortcutOverride:
-            if event.matches(QKeySequence.StandardKey.Undo):
-                if self.has_pending_edit() or self.can_undo():
-                    event.accept()
-                    return True
             if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter,
                                 Qt.Key.Key_Escape, Qt.Key.Key_C,
                                 Qt.Key.Key_J, Qt.Key.Key_BracketLeft,
@@ -312,13 +308,6 @@ class ImageLabel(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
-        if event.matches(QKeySequence.StandardKey.Undo):
-            if self.has_pending_edit():
-                self.reset_edit()
-                self.update()
-            else:
-                self.undo_requested.emit()
-            return
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.apply_requested.emit()
         elif key == Qt.Key.Key_Escape:
@@ -335,15 +324,63 @@ class ImageLabel(QWidget):
             super().keyPressEvent(event)
 
 
+class ScrubSpinBox(QSpinBox):
+    """A spin box that also works as a scrubby slider: press and drag left
+    or right to change the value. A plain click still lets you type."""
+    SCRUB_THRESHOLD = 3
+
+    def __init__(self):
+        super().__init__()
+        self.scrub_start_x = None
+        self.scrub_start_value = 0
+        self.is_scrubbing = False
+        self.lineEdit().installEventFilter(self)
+        self.lineEdit().setCursor(Qt.CursorShape.SizeHorCursor)
+        self.setToolTip('Drag left or right to change the size, or click '
+                        'and type')
+
+    def eventFilter(self, watched, event):
+        event_type = event.type()
+        if (event_type == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton):
+            self.scrub_start_x = event.globalPosition().x()
+            self.scrub_start_value = self.value()
+            self.is_scrubbing = False
+        elif (event_type == QEvent.Type.MouseMove
+              and self.scrub_start_x is not None
+              and event.buttons() & Qt.MouseButton.LeftButton):
+            dx = event.globalPosition().x() - self.scrub_start_x
+            if not self.is_scrubbing and abs(dx) >= self.SCRUB_THRESHOLD:
+                self.is_scrubbing = True
+            if self.is_scrubbing:
+                # Faster for big brushes.
+                step = max(1, self.scrub_start_value // 50)
+                self.setValue(int(self.scrub_start_value + dx * step))
+                self.lineEdit().deselect()
+                return True
+        elif event_type == QEvent.Type.MouseButtonRelease:
+            was_scrubbing = self.is_scrubbing
+            self.scrub_start_x = None
+            self.is_scrubbing = False
+            if was_scrubbing:
+                self.lineEdit().deselect()
+                return True
+        return super().eventFilter(watched, event)
+
+
 class ImageViewer(QWidget):
     image_edited = Signal()
+    history_changed = Signal()
 
     def __init__(self, proxy_image_list_model: ProxyImageListModel):
         super().__init__()
         self.proxy_image_list_model = proxy_image_list_model
         self.proxy_image_index = QModelIndex()
         # Each entry: (path, file bytes before the edit, description).
-        self.edit_undo_stack: list[tuple[Path, bytes, str]] = []
+        self.edit_undo_stack: list[tuple[Path, bytes, str, int]] = []
+        # Each entry: (path, file bytes after the edit, description, seq).
+        self.edit_redo_stack: list[tuple[Path, bytes, str, int]] = []
+        edit_history.on_new_edit(self.handle_new_edit)
         self.image_label = ImageLabel()
         self.image_label.can_undo = lambda: bool(self.edit_undo_stack)
 
@@ -352,23 +389,26 @@ class ImageViewer(QWidget):
         self.remove_button = QPushButton('Remove Brush (J)')
         self.remove_button.setCheckable(True)
         self.brush_size_label = QLabel('Brush size')
-        self.brush_size_spin_box = QSpinBox()
+        self.brush_size_spin_box = ScrubSpinBox()
         self.brush_size_spin_box.setRange(2, 1000)
         self.brush_size_spin_box.setValue(40)
         self.brush_size_spin_box.setSuffix(' px')
-        self.brush_size_spin_box.setToolTip('[ and ] or the mouse wheel '
-                                            'change the size')
+        self.brush_size_spin_box.setToolTip(
+            'Drag left/right to change the size, click to type. [ and ] or '
+            'the mouse wheel also work.')
         self.apply_button = QPushButton('Apply (Enter)')
         self.cancel_button = QPushButton('Cancel (Esc)')
         self.undo_button = QPushButton('Undo Edit')
-        self.undo_button.setToolTip('Undo the last crop or removal (Ctrl+Z '
-                                    'with the image focused)')
+        self.undo_button.setToolTip('Undo the last crop or removal (Ctrl+Z)')
+        self.redo_button = QPushButton('Redo Edit')
+        self.redo_button.setToolTip('Redo the last undone crop or removal '
+                                    '(Ctrl+Y)')
         self.status_label = QLabel()
         toolbar = QHBoxLayout()
         for widget in (self.crop_button, self.remove_button,
                        self.brush_size_label, self.brush_size_spin_box,
                        self.apply_button, self.cancel_button,
-                       self.undo_button):
+                       self.undo_button, self.redo_button):
             toolbar.addWidget(widget)
         toolbar.addWidget(self.status_label, stretch=1)
         layout = QVBoxLayout(self)
@@ -383,6 +423,7 @@ class ImageViewer(QWidget):
         self.apply_button.clicked.connect(self.apply_edit)
         self.cancel_button.clicked.connect(self.cancel_edit)
         self.undo_button.clicked.connect(self.undo_edit)
+        self.redo_button.clicked.connect(self.redo_edit)
         self.image_label.apply_requested.connect(self.apply_edit)
         self.image_label.cancel_requested.connect(self.cancel_edit)
         self.image_label.undo_requested.connect(self.undo_edit)
@@ -432,6 +473,7 @@ class ImageViewer(QWidget):
         self.apply_button.setEnabled(pending)
         self.cancel_button.setEnabled(label.mode != MODE_VIEW)
         self.undo_button.setEnabled(bool(self.edit_undo_stack))
+        self.redo_button.setEnabled(bool(self.edit_redo_stack))
         if label.mode == MODE_CROP:
             self.status_label.setText('Drag the edges or corners, then Enter '
                                       'to crop.')
@@ -470,8 +512,12 @@ class ImageViewer(QWidget):
             QMessageBox.critical(self, 'Edit failed', str(exception))
             return
         QApplication.restoreOverrideCursor()
-        self.edit_undo_stack.append((path, before, description))
+        self.edit_undo_stack.append((path, before, description,
+                                     edit_history.next_seq()))
         del self.edit_undo_stack[:-MAX_UNDO_STEPS]
+        self.edit_redo_stack.clear()
+        edit_history.new_edit('image')
+        self.history_changed.emit()
         mode = label.mode
         self.refresh_after_edit(path)
         # Stay in the same tool for the next edit.
@@ -485,10 +531,44 @@ class ImageViewer(QWidget):
     def undo_edit(self):
         if not self.edit_undo_stack:
             return
-        path, before, _ = self.edit_undo_stack.pop()
+        path, before, description, _ = self.edit_undo_stack.pop()
+        after = path.read_bytes() if path.exists() else b''
         path.write_bytes(before)
+        self.edit_redo_stack.append((path, after, description,
+                                     edit_history.next_seq()))
         self.refresh_after_edit(path)
         self.update_controls()
+        self.history_changed.emit()
+
+    def redo_edit(self):
+        if not self.edit_redo_stack:
+            return
+        path, after, description, _ = self.edit_redo_stack.pop()
+        before = path.read_bytes() if path.exists() else b''
+        path.write_bytes(after)
+        self.edit_undo_stack.append((path, before, description,
+                                     edit_history.next_seq()))
+        self.refresh_after_edit(path)
+        self.update_controls()
+        self.history_changed.emit()
+
+    def handle_new_edit(self, source: str):
+        # A new tag edit makes image redo meaningless (and vice versa).
+        if source != 'image' and self.edit_redo_stack:
+            self.edit_redo_stack.clear()
+            self.update_controls()
+            self.history_changed.emit()
+
+    def top_undo(self):
+        """(seq, description) of the next image edit to undo, or None."""
+        if not self.edit_undo_stack:
+            return None
+        return self.edit_undo_stack[-1][3], self.edit_undo_stack[-1][2]
+
+    def top_redo(self):
+        if not self.edit_redo_stack:
+            return None
+        return self.edit_redo_stack[-1][3], self.edit_redo_stack[-1][2]
 
     def refresh_after_edit(self, path: Path):
         """Reload the viewer and the thumbnail of the edited image."""

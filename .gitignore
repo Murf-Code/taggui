@@ -166,3 +166,4 @@ test/
 *.bak
 *.pt
 requirements-local.txt
+*.bak2
