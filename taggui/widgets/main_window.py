@@ -408,6 +408,7 @@ class MainWindow(QMainWindow):
             # First Ctrl+Z discards an unapplied crop box or brush strokes.
             label.reset_edit()
             label.update()
+            self.update_undo_and_redo_actions()
             return
         target = self.next_history_target(is_undo=True)
         if target is None:
@@ -437,7 +438,11 @@ class MainWindow(QMainWindow):
 
     def update_undo_and_redo_actions(self):
         undo_target = self.next_history_target(is_undo=True)
-        if undo_target:
+        if self.image_viewer.image_label.has_pending_edit():
+            # Ctrl+Z first discards unapplied crop or brush strokes.
+            self.undo_action.setText('Undo Unapplied Edit')
+            self.undo_action.setDisabled(False)
+        elif undo_target:
             self.undo_action.setText(f'Undo "{undo_target[1]}"')
             self.undo_action.setDisabled(False)
         else:
@@ -503,6 +508,8 @@ class MainWindow(QMainWindow):
         self.image_list_model.update_undo_and_redo_actions_requested.connect(
             self.update_undo_and_redo_actions)
         self.image_viewer.history_changed.connect(
+            self.update_undo_and_redo_actions)
+        self.image_viewer.image_label.edit_state_changed.connect(
             self.update_undo_and_redo_actions)
         edit_history.on_new_edit(self.handle_new_edit)
         # Rows are inserted or removed from the proxy image list model when the

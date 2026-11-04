@@ -220,21 +220,36 @@ class ImageLabel(QWidget):
         self.edit_state_changed.emit()
 
     # Brush interaction.
-    def paint_brush(self, pos: QPointF):
+    def paint_brush(self, pos: QPointF, erase: bool = False):
         if self.mask is None:
+            if erase:
+                return
             self.mask = QImage(self.image.size(),
                                QImage.Format.Format_ARGB32_Premultiplied)
             self.mask.fill(Qt.GlobalColor.transparent)
             self.edit_state_changed.emit()
         point = self.to_image(pos)
         painter = QPainter(self.mask)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor(255, 0, 0), self.brush_size,
+        if erase:
+            # Right button: erase the painted mask under the brush (no
+            # antialiasing, so no faint leftovers count as mask).
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_Clear)
+        else:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(255, 0, 0), self.brush_size + (2 if erase else 0),
                    Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                    Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
         start = self.last_brush_point or point
-        painter.drawLine(start, point)
+        if start == point:
+            # A single dab (a zero-length line draws nothing when erasing).
+            radius = pen.widthF() / 2
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 0, 0))
+            painter.drawEllipse(point, radius, radius)
+        else:
+            painter.drawLine(start, point)
         painter.end()
         self.last_brush_point = point
 
@@ -250,9 +265,15 @@ class ImageLabel(QWidget):
     # Events.
     def mousePressEvent(self, event):
         self.setFocus()
+        pos = event.position()
+        if (event.button() == Qt.MouseButton.RightButton
+                and self.mode == MODE_REMOVE):
+            self.last_brush_point = None
+            self.paint_brush(pos, erase=True)
+            self.update()
+            return
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        pos = event.position()
         if self.mode == MODE_CROP:
             self.drag_handle = self.crop_handle_at(pos)
             self.drag_start = pos
@@ -261,6 +282,13 @@ class ImageLabel(QWidget):
             self.last_brush_point = None
             self.paint_brush(pos)
             self.update()
+
+    def contextMenuEvent(self, event):
+        # No context menu while using the remove brush (right = eraser).
+        event.accept()
+
+    def is_mask_empty(self) -> bool:
+        return self.mask is None or not self.mask_array().any()
 
     def mouseMoveEvent(self, event):
         pos = event.position()
@@ -274,11 +302,20 @@ class ImageLabel(QWidget):
             self.cursor_pos = pos
             if event.buttons() & Qt.MouseButton.LeftButton:
                 self.paint_brush(pos)
+            elif event.buttons() & Qt.MouseButton.RightButton:
+                self.paint_brush(pos, erase=True)
             self.update()
 
     def mouseReleaseEvent(self, event):
         self.drag_handle = None
         self.last_brush_point = None
+        if (self.mode == MODE_REMOVE and self.mask is not None
+                and event.button() == Qt.MouseButton.RightButton
+                and self.is_mask_empty()):
+            # Everything was erased: nothing left to apply.
+            self.mask = None
+            self.edit_state_changed.emit()
+            self.update()
 
     def leaveEvent(self, event):
         self.cursor_pos = None
