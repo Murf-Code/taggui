@@ -2,21 +2,21 @@
 
 ## Murf-Code fork: extra features
 
-This fork of [TagGUI](https://github.com/jhc13/taggui) (based on v1.33.0) adds:
+This fork of [TagGUI](https://github.com/jhc13/taggui) by jhc13 (based on v1.33.0) adds:
 
 - **LM Studio and Ollama captioning.** Pick *LM Studio (local server)* or *Ollama (local server)* at the top of the Auto-Captioner model list to caption with whatever vision model you have loaded. Your prompt box is sent as the user prompt, with an editable system prompt, server URL, optional model name, max tokens, temperature and a Test Connection button. Reasoning (`<think>`) text is stripped out automatically.
-- **Open File Location.** Right-click an image to open Explorer with that file selected.
+- **Open File Location.** Right-click an image to show it in your file manager: Explorer with the file selected on Windows, Finder on macOS, and on Linux your desktop's file manager with the file selected (over D-Bus), or the folder opened with `xdg-open`.
 - **Stackable tag filters.** Right-click a tag in All Tags or Image Tags and choose *Add to Filter*, *Exclude from Filter* or *Add to Filter (OR)* to build filters like `tag:"z4ush" AND NOT tag:"dog"`.
 - **Better local-server captioning defaults.** New default tagging prompts, a *Max image size* setting (default 720 px on the longest side) for faster captions, and cleanup of semicolons, quotes and duplicate tags.
 - **Mask files hidden.** OneTrainer/Fizgig mask images (`name-masklabel.png`, `-mask`, `_mask`) are skipped when loading a folder.
-- **Remove tags from selected images.** With several images selected, deleting a tag in Image Tags (or right-click *Remove from Selected Images*, also in All Tags) removes it from every selected image that has it, after a confirmation. Undoable.
-- **Crop tool (C).** Drag the edges or corners in the image viewer, then Enter or *Apply* to overwrite the image; Esc cancels.
-- **Remove brush (J).** Paint over something (red overlay, size with `[`/`]` or the mouse wheel), then Enter to fill it in with LaMa on the GPU (OpenCV fallback). The big-lama model downloads on first use to `%LOCALAPPDATA%\taggui\models`. Loops close and the hole grows slightly, as in PhotoCraft's Remove Tool.
-- **Image edit undo.** Ctrl+Z with the image focused (or *Undo Edit*) restores the file before the last crop or removal.
-- **JTP-3 Hydra tagger.** RedRocket's e621 tagger (Apache-2.0) in the Auto-Captioner list, run locally on the GPU with the WD tagger settings (minimum score, maximum tags, tags to exclude). Uses an existing local copy (Fizgig's, or `%LOCALAPPDATA%\taggui\models\jtp-3-hydra`, or `TAGGUI_JTP3_DIR`) or downloads it once.
+- **Remove tags from selected images.** With several images selected, deleting a tag in Image Tags (or right-click *Remove from Selected Images*, also in All Tags) removes it from every selected image that has it, after a confirmation that says how many images it affects. Undoable.
+- **Crop tool (C).** Drag the edges or corners in the image viewer, then Enter or *Apply* to overwrite the image; Esc cancels. Crop mode closes after Apply or Cancel.
+- **Remove brush (J).** Paint over something (red overlay; change the size with `[`/`]`, the mouse wheel, or by dragging left/right on the brush size box), right-click or right-drag to erase the mask, then Enter to fill it in with LaMa on the GPU (OpenCV fallback). Loops close and the hole grows slightly, as in PhotoCraft's Remove Tool.
+- **Undo and redo (Ctrl+Z / Ctrl+Y).** One history covers tag edits and image edits, so Ctrl+Z brings back the image as it was before the last crop or removal and Ctrl+Y redoes it. Image edit history is kept in memory for the current session.
+- **JTP-3 Hydra tagger.** RedRocket's e621 tagger (Apache-2.0) in the Auto-Captioner list, run locally on the GPU with the WD tagger settings (minimum score, maximum tags, tags to exclude). Uses an existing local copy (`TAGGUI_JTP3_DIR`, or `jtp-3-hydra` in the models folder below) or downloads it once.
+- **Per-user models folder on every OS.** The big-lama and JTP-3 models are downloaded on first use to `%LOCALAPPDATA%\taggui\models` on Windows, `~/.local/share/taggui/models` on Linux (or `$XDG_DATA_HOME/taggui/models`), and `~/Library/Application Support/taggui/models` on macOS. Set `TAGGUI_MODELS_DIR` to use a different folder.
 
-To run it, clone this branch, install `requirements.txt` in a Python 3.12 environment, and run `taggui/run_gui.py`. For LM Studio, start its local server with a vision model loaded first.
-
+The Remove brush and JTP-3 tagger were built and tested on Windows with an NVIDIA GPU. They should work on Linux too, but haven't been tested there yet; please open an issue if something breaks.
 
 <img src='images/icon.png' alt='TagGUI icon' width='128'>
 
@@ -38,26 +38,83 @@ models.
 
 ## Installation
 
-The easiest way to use the application is to download the latest release from
-the [releases page](https://www.github.com/jhc13/taggui/releases).
-Choose the appropriate file for your operating system, extract it wherever you
-want, and run the executable file inside.
-You may have to install [7-Zip](https://www.7-zip.org/download.html) to
-extract the files if you don't have it on your system.
+**This fork has no prebuilt downloads. Run it from source as shown below.**
+The releases page of the original TagGUI
+(https://github.com/jhc13/taggui/releases) has the upstream version
+*without* this fork's features, so don't install from there if you want them.
 
-- macOS users: There is no macOS release because it requires a device running
-  the OS, and I do not have one. You can still install and run the program
-  manually (see below).
-- Linux users: You may need to install `libxcb-cursor0`.
-  (See [this Stack Overflow answer](https://stackoverflow.com/a/75941575).) You
-  may also have to install `python3.12-dev` or `python3.11-dev` (depending on
-  your Python version) if you get an error while trying to use a CogVLM2
-  model. (See [this issue](https://github.com/jhc13/taggui/issues/234).)
+You need Git and Python 3.12 (3.11 should also work).
+For GPU captioning, the Remove brush and the JTP-3 tagger, you also need an
+NVIDIA GPU with a recent driver.
+The LM Studio and Ollama options only need their local server running with a
+vision model loaded.
 
-Alternatively, you can install manually by cloning this repository and
-installing the dependencies in `requirements.txt`.
-Run `taggui/run_gui.py` to start the program.
-Python 3.12 is recommended, but Python 3.11 should also work.
+### Linux
+
+```bash
+# Ubuntu/Debian packages (use your distro's equivalents elsewhere; on Ubuntu
+# 22.04, python3.12 comes from the deadsnakes PPA).
+# libxcb-cursor0 is needed by Qt; see https://stackoverflow.com/a/75941575
+sudo apt install git python3.12 python3.12-venv python3.12-dev libxcb-cursor0
+
+git clone -b lmstudio-ollama https://github.com/Murf-Code/taggui
+cd taggui
+python3.12 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# On Linux, requirements.txt installs torch 2.6.0 from PyPI, which already
+# includes CUDA 12.4 support. Check that it sees your NVIDIA GPU:
+python -c "import torch; print(torch.cuda.is_available())"
+# If that prints False, update your NVIDIA driver; if you need a different CUDA
+# build, reinstall the same versions from the PyTorch index, for example:
+#   pip install --force-reinstall torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+
+python taggui/run_gui.py
+```
+
+To start it again later: `cd taggui && source venv/bin/activate && python taggui/run_gui.py`.
+
+`python3.12-dev` is only needed if you get an error while using a CogVLM2
+model (see [this issue](https://github.com/jhc13/taggui/issues/234)).
+
+### Windows
+
+In Command Prompt or PowerShell, with [Git](https://git-scm.com/download/win)
+and [Python 3.12](https://www.python.org/downloads/) installed:
+
+```bat
+git clone -b lmstudio-ollama https://github.com/Murf-Code/taggui
+cd taggui
+py -3.12 -m venv venv
+venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+REM requirements.txt installs the CUDA 12.4 build of torch on Windows.
+python -c "import torch; print(torch.cuda.is_available())"
+
+python taggui\run_gui.py
+```
+
+(In PowerShell, activate with `venv\Scripts\Activate.ps1`.)
+
+### macOS
+
+The same steps as Linux work (install Python 3.12 from python.org or
+Homebrew; no `apt` packages needed). Without an NVIDIA GPU, local models
+and the Remove brush run on the CPU, which is much slower. This fork hasn't
+been tested on macOS.
+
+### Updating
+
+From the `taggui` folder, with the venv activated:
+
+```bash
+git pull
+pip install -r requirements.txt
+```
 
 ## Usage
 

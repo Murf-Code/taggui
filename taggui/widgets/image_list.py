@@ -1,6 +1,4 @@
 import shutil
-import subprocess
-import sys
 from enum import Enum
 from functools import reduce
 from operator import or_
@@ -19,6 +17,7 @@ from pyparsing import (CaselessKeyword, CaselessLiteral, Group, OpAssoc,
                        infix_notation, nums, one_of, printables)
 
 from models.proxy_image_list_model import ProxyImageListModel
+from utils.app_paths import show_in_file_manager
 from utils.image import Image
 from utils.settings import get_settings
 from utils.settings_widgets import SettingsComboBox
@@ -196,14 +195,11 @@ class ImageListView(QListView):
         if image is None:
             return
         image_path = Path(image.path).resolve()
-        if sys.platform == 'win32':
-            # Open Explorer with the file selected.
-            subprocess.Popen(f'explorer /select,"{image_path}"')
-            return
-        if sys.platform == 'darwin':
-            subprocess.Popen(['open', '-R', str(image_path)])
-            return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(image_path.parent)))
+        # Explorer /select on Windows, open -R on macOS, the desktop file
+        # manager over D-Bus (or xdg-open on the folder) on Linux.
+        if not show_in_file_manager(image_path):
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(image_path.parent)))
 
     @Slot()
     def invert_selection(self):

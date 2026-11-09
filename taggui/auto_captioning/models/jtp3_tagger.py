@@ -2,9 +2,10 @@
 (https://huggingface.co/RedRocket/Hydra, formerly RedRocket/JTP-3,
 Apache-2.0). Runs with plain PyTorch through the network modules vendored in
 jtp3_hydra/ (credit and licence there), the same way Fizgig runs it: weights
-loaded from a local copy when one exists (Fizgig's models folder, or
-%LOCALAPPDATA%/taggui/models/jtp-3-hydra), otherwise downloaded once from the
-pinned Hugging Face revision.
+loaded from a local copy when one exists (TAGGUI_JTP3_DIR, Fizgig's models
+folder on Windows, or TagGUI's models folder: %LOCALAPPDATA%/taggui/models on
+Windows, ~/.local/share/taggui/models on Linux), otherwise downloaded once
+from the pinned Hugging Face revision.
 
 Scores are shown as the JTP-3 demo shows them, confidence = 2p - 1 (0 = unsure,
 1 = sure), and a tag scores at least as high as any tag that implies it
@@ -13,6 +14,7 @@ tags (safe, questionable, explicit) are left out, as with the WD tagger.
 """
 import csv
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from PIL import Image as PilImage
 
 import auto_captioning.captioning_thread as captioning_thread
 from auto_captioning.models.wd_tagger import WdTagger, get_tags_to_exclude
+from utils import app_paths
 from utils.image import Image
 
 JTP3_MODEL_ID = 'JTP-3 Hydra tagger'
@@ -38,11 +41,12 @@ def candidate_dirs() -> list[Path]:
     dirs = []
     if os.environ.get('TAGGUI_JTP3_DIR'):
         dirs.append(Path(os.environ['TAGGUI_JTP3_DIR']))
-    # Fizgig's copy (read only).
-    dirs.append(Path(r'H:\Stable_Diffusion\Fizgig\user_data\models'
-                     r'\jtp-3-hydra'))
-    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / '.cache')
-    dirs.append(Path(base) / 'taggui' / 'models' / 'jtp-3-hydra')
+    if sys.platform == 'win32':
+        # Fizgig's copy (read only), if it is on this Windows PC.
+        dirs.append(Path(r'H:\Stable_Diffusion\Fizgig\user_data\models'
+                         r'\jtp-3-hydra'))
+    # Last entry is where it downloads to when no copy is found.
+    dirs.append(app_paths.get_models_dir() / 'jtp-3-hydra')
     return dirs
 
 

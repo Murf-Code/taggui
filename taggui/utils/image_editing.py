@@ -1,10 +1,11 @@
 """Image editing helpers for the image viewer: crop, remove (inpaint)."""
 import io
-import os
 from pathlib import Path
 
 import numpy as np
 from PIL import Image as PilImage, ImageOps
+
+from utils import app_paths
 
 LAMA_URL = ('https://github.com/enesmsahin/simple-lama-inpainting/releases/'
             'download/v0.1.0/big-lama.pt')
@@ -14,8 +15,9 @@ last_inpaint_method = None
 
 
 def get_models_dir() -> Path:
-    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / '.cache')
-    return Path(base) / 'taggui' / 'models'
+    # %LOCALAPPDATA%/taggui/models on Windows, ~/.local/share/taggui/models
+    # on Linux, ~/Library/Application Support/taggui/models on macOS.
+    return app_paths.get_models_dir()
 
 
 def load_pil(path: Path) -> PilImage.Image:
