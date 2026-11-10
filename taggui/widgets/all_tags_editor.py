@@ -13,6 +13,7 @@ from utils.big_widgets import TallPushButton
 from utils.enums import AllTagsSortBy, SortOrder
 from utils.filter_text import build_tag_filter_menu
 from utils.settings_widgets import SettingsComboBox
+from utils.tag_colors import add_color_menu, get_tag_colors
 from utils.text_edit_item_delegate import TextEditItemDelegate
 from utils.utils import get_confirmation_dialog_reply, list_with_and, pluralize
 
@@ -82,6 +83,8 @@ class AllTagsList(QListView):
         remove_action = menu.addAction(label)
         remove_action.triggered.connect(
             lambda: self.selected_images_tags_deletion_requested.emit(tags))
+        menu.addSeparator()
+        add_color_menu(menu, self, get_tag_colors(), tags)
         menu.exec(event.globalPos())
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -126,7 +129,7 @@ class AllTagsList(QListView):
 
 
 class AllTagsEditor(QDockWidget):
-    def __init__(self, tag_counter_model: TagCounterModel):
+    def __init__(self, tag_counter_model: TagCounterModel, tokenizer=None):
         super().__init__()
         self.tag_counter_model = tag_counter_model
 
@@ -136,7 +139,7 @@ class AllTagsEditor(QDockWidget):
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea
                              | Qt.DockWidgetArea.RightDockWidgetArea)
         self.proxy_tag_counter_model = ProxyTagCounterModel(
-            self.tag_counter_model)
+            self.tag_counter_model, tokenizer)
         self.proxy_tag_counter_model.setFilterRole(Qt.ItemDataRole.EditRole)
         self.filter_line_edit = FilterLineEdit()
         click_action_layout = QHBoxLayout()

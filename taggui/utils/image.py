@@ -10,3 +10,6 @@ class Image:
     dimensions: tuple[int, int] | None
     tags: list[str] = field(default_factory=list)
     thumbnail: QIcon | None = None
+    # Free-form natural-language caption, saved in the caption file after the
+    # first line break (the first line holds the tags).
+    nl: str = ''

@@ -14,9 +14,17 @@ from utils.image import Image
 from utils.settings import get_tag_separator
 
 
+NL_CAPTION_POSITIONS = (CaptionPosition.NL_REPLACE, CaptionPosition.NL_APPEND)
+
+
+def is_nl_caption_position(caption_position: str) -> bool:
+    return caption_position in NL_CAPTION_POSITIONS
+
+
 def add_caption_to_tags(tags: list[str], caption: str,
                         caption_position: CaptionPosition) -> list[str]:
-    if caption_position == CaptionPosition.DO_NOT_ADD or not caption:
+    if (caption_position == CaptionPosition.DO_NOT_ADD or not caption
+            or is_nl_caption_position(caption_position)):
         return tags
     tag_separator = get_tag_separator()
     new_tags = caption.split(tag_separator)
@@ -60,6 +68,9 @@ class CaptioningThread(QThread):
     # third parameter must be declared as `list` instead of `list[str]` for it
     # to work.
     caption_generated = Signal(QModelIndex, str, list)
+    # The image index, the caption, and whether to append it to the
+    # natural-language caption instead of replacing it.
+    nl_caption_generated = Signal(QModelIndex, str, bool)
     progress_bar_update_requested = Signal(int)
 
     def __init__(self, parent, image_list_model: ImageListModel,
@@ -117,6 +128,10 @@ class CaptioningThread(QThread):
                 model_inputs, image_prompt)
             tags = add_caption_to_tags(image.tags, caption, caption_position)
             self.caption_generated.emit(image_index, caption, tags)
+            if is_nl_caption_position(caption_position) and caption:
+                self.nl_caption_generated.emit(
+                    image_index, caption,
+                    caption_position == CaptionPosition.NL_APPEND)
             if are_multiple_images_selected:
                 self.progress_bar_update_requested.emit(i + 1)
             if i == 0 and not are_multiple_images_selected:

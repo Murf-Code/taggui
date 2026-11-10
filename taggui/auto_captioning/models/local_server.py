@@ -110,6 +110,14 @@ def clean_tag_list(text: str, separator: str) -> str:
     return separator.join(tags)
 
 
+def limit_tags(caption: str, separator: str, max_tags: int) -> str:
+    """Keep the first `max_tags` tags (0 keeps them all)."""
+    if not max_tags or max_tags <= 0:
+        return caption
+    tags = [tag for tag in caption.split(separator) if tag.strip()]
+    return separator.join(tags[:max_tags])
+
+
 def encode_image(path, max_side: int = DEFAULT_MAX_IMAGE_SIDE) -> str:
     max_side = max(MIN_IMAGE_SIDE, min(int(max_side), MAX_IMAGE_SIDE))
     pil_image = PilImage.open(path)
@@ -304,6 +312,12 @@ class LocalServerModel(AutoCaptioningModel):
         self.split_tags = server_settings.get('split_tags', True)
         self.max_image_side = server_settings.get(
             'max_image_side', DEFAULT_MAX_IMAGE_SIDE)
+        # 0 keeps every tag.
+        self.max_tags = server_settings.get('max_tags', 0)
+        # Natural-language output is kept as prose, never split into tags.
+        self.is_nl_output = caption_settings.get('caption_position') in (
+            'Replace natural-language caption',
+            'Add to natural-language caption')
 
     def get_error_message(self) -> str | None:
         if not self.backend.base_url:
@@ -351,13 +365,15 @@ class LocalServerModel(AutoCaptioningModel):
             print('Warning: the model returned an empty caption. If it is a '
                   'reasoning model, increase "Max tokens".')
         separator = self.thread.tag_separator
-        if self.split_tags:
+        split_tags = self.split_tags and not self.is_nl_output
+        if split_tags:
             caption = clean_tag_list(text, separator)
+            caption = limit_tags(caption, separator, self.max_tags)
         else:
             caption = ' '.join(text.split())
         if self.caption_start.strip() and not caption.startswith(
                 self.caption_start.strip()):
-            joiner = separator if self.split_tags else ' '
+            joiner = separator if split_tags else ' '
             caption = f'{self.caption_start.strip()}{joiner}{caption}'
         return caption, caption
 

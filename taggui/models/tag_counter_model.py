@@ -4,6 +4,7 @@ from PySide6.QtCore import QAbstractListModel, Qt, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
 from utils.image import Image
+from utils.tag_colors import get_tag_colors
 from utils.utils import get_confirmation_dialog_reply, list_with_and, pluralize
 
 
@@ -27,6 +28,8 @@ class TagCounterModel(QAbstractListModel):
             return f'{tag} ({count})'
         if role == Qt.ItemDataRole.EditRole:
             return tag
+        if role == Qt.ItemDataRole.DecorationRole:
+            return get_tag_colors().icon_for(tag)
 
     def flags(self, index) -> Qt.ItemFlag:
         """Make the tags editable."""

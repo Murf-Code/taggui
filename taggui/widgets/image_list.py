@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import (QFile, QItemSelection, QItemSelectionModel,
                             QItemSelectionRange, QModelIndex, QSize, QUrl, Qt,
                             Signal, Slot)
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPainter, QPalette
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDockWidget,
                                QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                                QListView, QMenu, QMessageBox, QVBoxLayout,
@@ -20,6 +20,8 @@ from models.proxy_image_list_model import ProxyImageListModel
 from utils.app_paths import show_in_file_manager
 from utils.image import Image
 from utils.settings import get_settings
+from widgets.filter_chip_bar import FilterChipBar
+from widgets.image_card_delegate import ImageCardDelegate
 from utils.settings_widgets import SettingsComboBox
 from utils.utils import get_confirmation_dialog_reply, pluralize
 
@@ -100,6 +102,8 @@ class SelectionMode(str, Enum):
 class ImageListView(QListView):
     tags_paste_requested = Signal(list, list)
     directory_reload_requested = Signal()
+    # Emitted with the new state after Mark Complete / Mark Incomplete.
+    completion_toggled = Signal(bool, int)
 
     def __init__(self, parent, proxy_image_list_model: ProxyImageListModel,
                  tag_separator: str, image_width: int):
@@ -150,6 +154,20 @@ class ImageListView(QListView):
         self.open_file_location_action = self.addAction('Open File Location')
         self.open_file_location_action.triggered.connect(
             self.open_file_location)
+        self.toggle_completed_action = self.addAction('Mark Complete')
+        self.toggle_completed_action.setShortcut('Ctrl+K')
+        self.toggle_completed_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut)
+        self.toggle_completed_action.setToolTip(
+            'Complete images get a check mark and their tags are locked')
+        self.toggle_completed_action.triggered.connect(
+            self.toggle_completed)
+        self.card_delegate = ImageCardDelegate(self, image_width)
+        self.classic_delegate = self.itemDelegate()
+        self.setMouseTracking(True)
+        show_tags = get_settings().value('image_list_show_tags',
+                                         defaultValue=False, type=bool)
+        self.set_show_tags(show_tags)
         # The image that was right-clicked to open the context menu.
         self.context_menu_index = None
 
@@ -168,8 +186,53 @@ class ImageListView(QListView):
         self.context_menu.addAction(self.delete_images_action)
         self.context_menu.addAction(self.open_image_action)
         self.context_menu.addAction(self.open_file_location_action)
+        self.context_menu.addSeparator()
+        self.context_menu.addAction(self.toggle_completed_action)
         self.selectionModel().selectionChanged.connect(
             self.update_context_menu_actions)
+
+    def set_show_tags(self, show_tags: bool):
+        """Classic list (thumbnail with tags beside it) or cards."""
+        self.show_tags = show_tags
+        self.setItemDelegate(self.classic_delegate if show_tags
+                             else self.card_delegate)
+        self.setSpacing(0)
+        self.scheduleDelayedItemsLayout()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.model() is None or self.model().rowCount() > 0:
+            return
+        if self.proxy_image_list_model.sourceModel().rowCount() == 0:
+            return
+        # Every image is filtered out: say so instead of an empty list.
+        painter = QPainter(self.viewport())
+        painter.setPen(self.palette().color(QPalette.ColorRole.PlaceholderText))
+        painter.drawText(self.viewport().rect().adjusted(12, 12, -12, -12),
+                         Qt.AlignmentFlag.AlignHCenter
+                         | Qt.AlignmentFlag.AlignTop
+                         | Qt.TextFlag.TextWordWrap,
+                         'No images match these filters.\nRemove a bubble '
+                         'or press Clear.')
+        painter.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self.show_tags:
+            # Cards follow the width of the list.
+            self.scheduleDelayedItemsLayout()
+
+    @Slot()
+    def toggle_completed(self):
+        images = self.get_selected_images()
+        if not images and self.currentIndex().isValid():
+            images = [self.currentIndex().data(Qt.ItemDataRole.UserRole)]
+        if not images:
+            return
+        image_list_model = self.proxy_image_list_model.sourceModel()
+        is_completed = image_list_model.toggle_completed(images)
+        self.completion_toggled.emit(is_completed, len(images))
+        self.update_context_menu_actions()
 
     def contextMenuEvent(self, event):
         index = self.indexAt(event.pos())
@@ -365,6 +428,12 @@ class ImageListView(QListView):
         self.copy_images_action.setText(copy_images_action_name)
         self.delete_images_action.setText(delete_images_action_name)
         self.open_image_action.setVisible(selected_image_count == 1)
+        images = self.get_selected_images()
+        image_list_model = self.proxy_image_list_model.sourceModel()
+        all_completed = bool(images) and all(
+            image_list_model.is_completed(image) for image in images)
+        self.toggle_completed_action.setText(
+            'Mark Incomplete' if all_completed else 'Mark Complete')
 
 
 class ImageList(QDockWidget):
@@ -379,6 +448,8 @@ class ImageList(QDockWidget):
                              | Qt.DockWidgetArea.RightDockWidgetArea)
 
         self.filter_line_edit = FilterLineEdit()
+        # Removable filter bubbles; the text box is behind its Text button.
+        self.filter_chip_bar = FilterChipBar(self.filter_line_edit)
         selection_mode_layout = QHBoxLayout()
         selection_mode_label = QLabel('Selection mode')
         self.selection_mode_combo_box = SettingsComboBox(
@@ -393,6 +464,7 @@ class ImageList(QDockWidget):
         # A container widget is required to use a layout with a `QDockWidget`.
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self.filter_chip_bar)
         layout.addWidget(self.filter_line_edit)
         layout.addLayout(selection_mode_layout)
         layout.addWidget(self.list_view)

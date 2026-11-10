@@ -2,7 +2,8 @@ from PySide6.QtCore import (QItemSelectionModel, QModelIndex, QStringListModel,
                             QTimer, Qt, Signal, Slot)
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDockWidget,
-                               QLabel, QLineEdit, QListView, QMessageBox,
+                               QHBoxLayout, QLabel, QLineEdit, QListView,
+                               QMessageBox, QPlainTextEdit, QPushButton,
                                QVBoxLayout, QWidget)
 from transformers import PreTrainedTokenizerBase
 
@@ -10,7 +11,9 @@ from models.proxy_image_list_model import ProxyImageListModel
 from models.tag_counter_model import TagCounterModel
 from utils.image import Image
 from utils.filter_text import build_tag_filter_menu
+from utils.caption_file import separator_uses_newline
 from utils.settings import DEFAULT_SETTINGS, get_settings
+from utils.tag_colors import add_color_menu, get_tag_colors
 from utils.text_edit_item_delegate import TextEditItemDelegate
 from utils.utils import get_confirmation_dialog_reply
 from widgets.image_list import ImageList
@@ -127,6 +130,11 @@ class ImageTagsList(QListView):
                 f'Selected Images')
             remove_action.triggered.connect(
                 lambda: self.multi_image_tags_removal_requested.emit(tags))
+        selected_tags = [selected_index.data(Qt.ItemDataRole.EditRole)
+                         for selected_index in self.selectedIndexes()]
+        color_tags = selected_tags if tag in selected_tags else [tag]
+        menu.addSeparator()
+        add_color_menu(menu, self, get_tag_colors(), color_tags)
         menu.exec(event.globalPos())
 
     def get_selected_image_count(self) -> int:
@@ -171,7 +179,19 @@ class ImageTagsList(QListView):
             QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
 
+class NaturalLanguageEdit(QPlainTextEdit):
+    """The free-form caption under the tags. Saved when it loses focus."""
+    editing_finished = Signal()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.editing_finished.emit()
+
+
 class ImageTagsEditor(QDockWidget):
+    # The image and its new natural-language caption.
+    nl_edit_requested = Signal(object, str)
+
     def __init__(self, proxy_image_list_model: ProxyImageListModel,
                  tag_counter_model: TagCounterModel,
                  image_tag_list_model: QStringListModel, image_list: ImageList,
@@ -193,13 +213,54 @@ class ImageTagsEditor(QDockWidget):
                                          tag_separator)
         self.image_tags_list = ImageTagsList(self.image_tag_list_model)
         self.token_count_label = QLabel()
+        self.lock_label = QLabel(
+            'Tags are locked because this image is marked complete. '
+            'Press Ctrl+K to unlock.')
+        self.lock_label.setWordWrap(True)
+        self.lock_label.setStyleSheet(
+            'color: #ffffff; background: #2e7d32; border-radius: 6px; '
+            'padding: 6px;')
+        self.lock_label.hide()
+        self.is_locked = False
+        self.nl_toggle_button = QPushButton('Natural Language')
+        self.nl_toggle_button.setCheckable(True)
+        self.nl_toggle_button.setToolTip(
+            'A free-form caption saved under the tags, after the first line '
+            'break of the caption file')
+        self.nl_text_edit = NaturalLanguageEdit()
+        self.nl_text_edit.setPlaceholderText(
+            'Free-form caption. Saved under the tags, after the first line '
+            'break.')
+        self.nl_text_edit.setTabChangesFocus(True)
+        self.nl_text_edit.setMaximumHeight(
+            self.nl_text_edit.fontMetrics().lineSpacing() * 6 + 16)
+        self.nl_image: Image | None = None
+        settings = get_settings()
+        self.nl_toggle_button.setChecked(settings.value(
+            'show_natural_language', defaultValue=False, type=bool))
+        self.nl_toggle_button.toggled.connect(
+            lambda checked: settings.setValue('show_natural_language',
+                                              checked))
+        self.nl_toggle_button.toggled.connect(self.update_nl_visibility)
+        self.nl_text_edit.editing_finished.connect(self.commit_nl)
+        if separator_uses_newline(tag_separator):
+            # The whole caption file is tags when the separator is a line
+            # break, so there is nowhere to put the natural language.
+            self.nl_toggle_button.setChecked(False)
+            self.nl_toggle_button.setEnabled(False)
         # A container widget is required to use a layout with a `QDockWidget`.
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self.lock_label)
         layout.addWidget(self.tag_input_box)
-        layout.addWidget(self.image_tags_list)
-        layout.addWidget(self.token_count_label)
+        layout.addWidget(self.image_tags_list, stretch=3)
+        footer_layout = QHBoxLayout()
+        footer_layout.addWidget(self.token_count_label, stretch=1)
+        footer_layout.addWidget(self.nl_toggle_button)
+        layout.addLayout(footer_layout)
+        layout.addWidget(self.nl_text_edit, stretch=1)
         self.setWidget(container)
+        self.update_nl_visibility()
 
         # When a tag is added, select it and scroll to the bottom of the list.
         self.image_tag_list_model.rowsInserted.connect(
@@ -240,11 +301,64 @@ class ImageTagsEditor(QDockWidget):
         self.image_tags_list.select_tag(tag_count - 1)
 
     @Slot()
+    def update_nl_visibility(self):
+        self.nl_text_edit.setVisible(self.nl_toggle_button.isChecked())
+
+    @Slot()
+    def commit_nl(self):
+        """Save the natural-language caption of the image it belongs to."""
+        if self.nl_image is None:
+            return
+        if self.is_locked or not self.nl_text_edit.document().isModified():
+            return
+        self.nl_text_edit.document().setModified(False)
+        self.nl_edit_requested.emit(self.nl_image,
+                                    self.nl_text_edit.toPlainText())
+
+    def set_locked(self, is_locked: bool):
+        """Lock tag editing for images marked complete."""
+        self.is_locked = is_locked
+        self.lock_label.setVisible(is_locked)
+        self.tag_input_box.setDisabled(is_locked)
+        self.tag_input_box.setPlaceholderText(
+            'Tags locked' if is_locked else 'Add Tag')
+        self.image_tags_list.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers if is_locked
+            else QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.AnyKeyPressed)
+        self.image_tags_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.NoDragDrop if is_locked
+            else QAbstractItemView.DragDropMode.InternalMove)
+        self.nl_text_edit.setReadOnly(is_locked)
+
+    def refresh_lock(self):
+        if self.image_index is None or not self.image_index.isValid():
+            return
+        image_list_model = self.proxy_image_list_model.sourceModel()
+        image = image_list_model.data(self.image_index,
+                                      Qt.ItemDataRole.UserRole)
+        self.set_locked(image_list_model.is_completed(image))
+
+    @Slot()
     def load_image_tags(self, proxy_image_index: QModelIndex):
+        # Save the natural language of the previous image first.
+        self.commit_nl()
         self.image_index = self.proxy_image_list_model.mapToSource(
             proxy_image_index)
         image: Image = self.proxy_image_list_model.data(
             proxy_image_index, Qt.ItemDataRole.UserRole)
+        if image is None:
+            return
+        self.refresh_lock()
+        is_typing_here = (self.nl_text_edit.hasFocus()
+                          and self.nl_image is image)
+        if not is_typing_here and (self.nl_image is not image
+                                   or self.nl_text_edit.toPlainText()
+                                   != image.nl):
+            self.nl_text_edit.setPlainText(image.nl)
+            self.nl_text_edit.document().setModified(False)
+        self.nl_image = image
         # If the string list already contains the image's tags, do not reload
         # them. This is the case when the tags are edited directly through the
         # image tags editor. Removing this check breaks the functionality of

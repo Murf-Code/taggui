@@ -4,8 +4,8 @@ from pathlib import Path
 from PySide6.QtCore import QModelIndex, Qt, Signal, Slot
 from PySide6.QtGui import QFontMetrics, QTextCursor
 from PySide6.QtWidgets import (QAbstractScrollArea, QDockWidget, QFormLayout,
-                               QFrame, QHBoxLayout, QLabel, QMessageBox,
-                               QPushButton,
+                               QFrame, QHBoxLayout, QLabel, QMenu,
+                               QMessageBox, QPushButton,
                                QPlainTextEdit, QProgressBar, QScrollArea,
                                QVBoxLayout, QWidget)
 
@@ -16,6 +16,7 @@ from auto_captioning.models.local_server import (
     LmStudioBackend, LocalServerError, MAX_IMAGE_SIDE, MIN_IMAGE_SIDE,
     OLLAMA_MODEL_ID, OllamaBackend, is_local_server_model)
 from auto_captioning.models.wd_tagger import WdTagger
+from auto_captioning.prompt_presets import PROMPT_PRESETS, PromptPreset
 from auto_captioning.models_list import MODELS, get_model_class
 from dialogs.caption_multiple_images_dialog import CaptionMultipleImagesDialog
 from models.image_list_model import ImageListModel
@@ -319,6 +320,26 @@ class CaptionSettingsForm(QVBoxLayout):
             'many pixels before being sent. Smaller is faster.')
         self.split_tags_check_box = SettingsBigCheckBox(
             key='local_server_split_tags', default=True)
+        self.local_server_max_tags_spin_box = FocusedScrollSettingsSpinBox(
+            key='local_server_max_tags', default=0, minimum=0, maximum=999)
+        self.local_server_max_tags_spin_box.setSpecialValueText('No limit')
+        self.local_server_max_tags_spin_box.setToolTip(
+            'Keep only the first tags of each reply (0 keeps them all).')
+        self.prompt_preset_button = QPushButton('Load Prompt Preset')
+        self.prompt_preset_button.setToolTip(
+            'Fill the prompts and caption position from a preset. '
+            'Tag2Caption writes a caption from the tags already on each '
+            'image.')
+        preset_menu = QMenu(self.prompt_preset_button)
+        for preset in PROMPT_PRESETS:
+            action = preset_menu.addAction(preset.name)
+            action.setToolTip(preset.description)
+            action.triggered.connect(
+                lambda _=False, preset_=preset: self.apply_prompt_preset(
+                    preset_))
+        preset_menu.setToolTipsVisible(True)
+        self.prompt_preset_button.setMenu(preset_menu)
+        common_form.addRow(self.prompt_preset_button)
         common_form.addRow('System prompt', self.system_prompt_text_edit)
         numbers_form = QFormLayout()
         numbers_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -330,6 +351,7 @@ class CaptionSettingsForm(QVBoxLayout):
                             self.local_server_max_image_side_spin_box)
         numbers_form.addRow('Split output into tags (comma/line separated)',
                             self.split_tags_check_box)
+        numbers_form.addRow('Max tags', self.local_server_max_tags_spin_box)
 
         container_layout.addWidget(self.lm_studio_settings_container)
         container_layout.addWidget(self.ollama_settings_container)
@@ -337,6 +359,16 @@ class CaptionSettingsForm(QVBoxLayout):
         container_layout.addLayout(common_form)
         container_layout.addLayout(numbers_form)
         self.test_server_button.clicked.connect(self.test_local_server)
+
+    def apply_prompt_preset(self, preset: PromptPreset):
+        self.prompt_text_edit.setPlainText(preset.user_prompt)
+        self.system_prompt_text_edit.setPlainText(preset.system_prompt)
+        self.caption_position_combo_box.setCurrentText(
+            preset.caption_position)
+        self.split_tags_check_box.setChecked(preset.split_tags)
+        if preset.temperature is not None:
+            self.local_server_temperature_spin_box.setValue(
+                preset.temperature)
 
     @Slot()
     def test_local_server(self):
@@ -481,6 +513,7 @@ class CaptionSettingsForm(QVBoxLayout):
                 'temperature':
                     self.local_server_temperature_spin_box.value(),
                 'split_tags': self.split_tags_check_box.isChecked(),
+                'max_tags': self.local_server_max_tags_spin_box.value(),
                 'max_image_side':
                     self.local_server_max_image_side_spin_box.value()
             },
@@ -503,6 +536,7 @@ def restore_stdout_and_stderr():
 
 class AutoCaptioner(QDockWidget):
     caption_generated = Signal(QModelIndex, str, list)
+    nl_caption_generated = Signal(QModelIndex, str, bool)
 
     def __init__(self, image_list_model: ImageListModel,
                  image_list: ImageList):
@@ -648,6 +682,8 @@ class AutoCaptioner(QDockWidget):
             self.console_text_edit.clear)
         self.captioning_thread.caption_generated.connect(
             self.caption_generated)
+        self.captioning_thread.nl_caption_generated.connect(
+            self.nl_caption_generated)
         self.captioning_thread.progress_bar_update_requested.connect(
             self.progress_bar.setValue)
         self.captioning_thread.finished.connect(

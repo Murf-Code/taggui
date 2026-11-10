@@ -14,11 +14,16 @@ from PySide6.QtGui import QIcon, QImageReader, QPixmap
 from PySide6.QtWidgets import QMessageBox
 
 from utils import edit_history
+from utils.caption_file import compose_caption, split_caption
+from utils.dataset_state import (load_completed, relative_key,
+                                 save_completed)
 from utils.image import Image
 from utils.settings import DEFAULT_SETTINGS, get_settings
 from utils.utils import get_confirmation_dialog_reply, pluralize
 
 UNDO_STACK_SIZE = 32
+# Model role that says whether an image is marked complete.
+COMPLETED_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def get_file_paths(directory_path: Path) -> set[Path]:
@@ -40,6 +45,8 @@ class HistoryItem:
     action_name: str
     tags: list[list[str]]
     should_ask_for_confirmation: bool
+    # The natural-language captions at the time (None for old entries).
+    nls: list[str] | None = None
     # Position in the shared tag/image-edit history.
     seq: int = field(default_factory=edit_history.next_seq)
 
@@ -52,6 +59,9 @@ class Scope(str, Enum):
 
 class ImageListModel(QAbstractListModel):
     update_undo_and_redo_actions_requested = Signal()
+    # Emitted when an edit was skipped because the image is marked complete.
+    locked_images_skipped = Signal(int)
+    completed_images_changed = Signal()
 
     def __init__(self, image_list_image_width: int, tag_separator: str):
         super().__init__()
@@ -62,6 +72,11 @@ class ImageListModel(QAbstractListModel):
         self.redo_stack = []
         self.proxy_image_list_model = None
         self.image_list_selection_model = None
+        self.directory_path: Path | None = None
+        # Relative paths of images marked complete; their tags are locked.
+        self.completed: set[str] = set()
+        # Overridden in tests to keep the state out of the user folder.
+        self.dataset_state_dir: Path | None = None
 
     def rowCount(self, parent=None) -> int:
         return len(self.images)
@@ -70,6 +85,10 @@ class ImageListModel(QAbstractListModel):
         image = self.images[index.row()]
         if role == Qt.ItemDataRole.UserRole:
             return image
+        if role == COMPLETED_ROLE:
+            return self.is_completed(image)
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return image.path.name
         if role == Qt.ItemDataRole.DisplayRole:
             # The text shown next to the thumbnail in the image list.
             text = image.path.name
@@ -104,6 +123,9 @@ class ImageListModel(QAbstractListModel):
                          int(self.image_list_image_width * height / width))
 
     def load_directory(self, directory_path: Path):
+        self.directory_path = Path(directory_path)
+        self.completed = load_completed(self.directory_path,
+                                        self.dataset_state_dir)
         self.images.clear()
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -155,6 +177,7 @@ class ImageListModel(QAbstractListModel):
                       f'{exception}', file=sys.stderr)
                 dimensions = None
             tags = []
+            nl = ''
             text_file_path = image_path.with_suffix('.txt')
             if str(text_file_path) in text_file_path_strings:
                 # `errors='replace'` inserts a replacement marker such as '?'
@@ -162,10 +185,8 @@ class ImageListModel(QAbstractListModel):
                 caption = text_file_path.read_text(encoding='utf-8',
                                                    errors='replace')
                 if caption:
-                    tags = caption.split(self.tag_separator)
-                    tags = [tag.strip() for tag in tags]
-                    tags = [tag for tag in tags if tag]
-            image = Image(image_path, dimensions, tags)
+                    tags, nl = split_caption(caption, self.tag_separator)
+            image = Image(image_path, dimensions, tags, nl=nl)
             self.images.append(image)
         self.images.sort(key=lambda image_: image_.path)
         self.modelReset.emit()
@@ -174,8 +195,9 @@ class ImageListModel(QAbstractListModel):
                           should_ask_for_confirmation: bool):
         """Add the current state of the image tags to the undo stack."""
         tags = [image.tags.copy() for image in self.images]
+        nls = [image.nl for image in self.images]
         self.undo_stack.append(HistoryItem(action_name, tags,
-                                           should_ask_for_confirmation))
+                                           should_ask_for_confirmation, nls))
         self.redo_stack.clear()
         edit_history.new_edit('tags')
         self.update_undo_and_redo_actions_requested.emit()
@@ -183,8 +205,8 @@ class ImageListModel(QAbstractListModel):
     def write_image_tags_to_disk(self, image: Image):
         try:
             image.path.with_suffix('.txt').write_text(
-                self.tag_separator.join(image.tags), encoding='utf-8',
-                errors='replace')
+                compose_caption(image.tags, image.nl, self.tag_separator),
+                encoding='utf-8', errors='replace')
         except OSError:
             error_message_box = QMessageBox()
             error_message_box.setWindowTitle('Error')
@@ -213,17 +235,28 @@ class ImageListModel(QAbstractListModel):
                 return
         source_stack.pop()
         tags = [image.tags for image in self.images]
+        nls = [image.nl for image in self.images]
         destination_stack.append(HistoryItem(
             history_item.action_name, tags,
-            history_item.should_ask_for_confirmation))
+            history_item.should_ask_for_confirmation, nls))
+        history_nls = history_item.nls or [None] * len(history_item.tags)
         changed_image_indices = []
-        for image_index, (image, history_image_tags) in enumerate(
-                zip(self.images, history_item.tags)):
-            if image.tags == history_image_tags:
+        skipped_count = 0
+        for image_index, (image, history_image_tags, history_nl) in enumerate(
+                zip(self.images, history_item.tags, history_nls)):
+            if history_nl is None:
+                history_nl = image.nl
+            if image.tags == history_image_tags and image.nl == history_nl:
+                continue
+            if self.is_completed(image):
+                skipped_count += 1
                 continue
             changed_image_indices.append(image_index)
             image.tags = history_image_tags
+            image.nl = history_nl
             self.write_image_tags_to_disk(image)
+        if skipped_count:
+            self.locked_images_skipped.emit(skipped_count)
         if changed_image_indices:
             self.dataChanged.emit(self.index(changed_image_indices[0]),
                                   self.index(changed_image_indices[-1]))
@@ -286,7 +319,7 @@ class ImageListModel(QAbstractListModel):
         self.add_to_undo_stack(action_name='Find and Replace',
                                should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if not self.is_image_in_scope(scope, image_index, image):
                 continue
             caption = self.tag_separator.join(image.tags)
@@ -311,7 +344,7 @@ class ImageListModel(QAbstractListModel):
         self.add_to_undo_stack(action_name='Sort Tags',
                                should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if len(image.tags) < 2:
                 continue
             old_caption = self.tag_separator.join(image.tags)
@@ -337,7 +370,7 @@ class ImageListModel(QAbstractListModel):
         self.add_to_undo_stack(action_name='Sort Tags',
                                should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if len(image.tags) < 2:
                 continue
             old_caption = self.tag_separator.join(image.tags)
@@ -361,7 +394,7 @@ class ImageListModel(QAbstractListModel):
         self.add_to_undo_stack(action_name='Reverse Order of Tags',
                                should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if len(image.tags) < 2:
                 continue
             changed_image_indices.append(image_index)
@@ -379,7 +412,7 @@ class ImageListModel(QAbstractListModel):
         self.add_to_undo_stack(action_name='Shuffle Tags',
                                should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if len(image.tags) < 2:
                 continue
             changed_image_indices.append(image_index)
@@ -401,7 +434,7 @@ class ImageListModel(QAbstractListModel):
         self.add_to_undo_stack(action_name='Move Tags to Front',
                                should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if not any(tag in image.tags for tag in tags_to_move):
                 continue
             old_caption = self.tag_separator.join(image.tags)
@@ -428,7 +461,7 @@ class ImageListModel(QAbstractListModel):
                                should_ask_for_confirmation=True)
         changed_image_indices = []
         removed_tag_count = 0
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             tag_count = len(image.tags)
             unique_tag_count = len(set(image.tags))
             if tag_count == unique_tag_count:
@@ -452,7 +485,7 @@ class ImageListModel(QAbstractListModel):
                                should_ask_for_confirmation=True)
         changed_image_indices = []
         removed_tag_count = 0
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             old_tag_count = len(image.tags)
             image.tags = [tag for tag in image.tags if tag.strip()]
             new_tag_count = len(image.tags)
@@ -470,6 +503,11 @@ class ImageListModel(QAbstractListModel):
         image: Image = self.data(image_index, Qt.ItemDataRole.UserRole)
         if image.tags == tags:
             return
+        if self.is_completed(image):
+            self.locked_images_skipped.emit(1)
+            # Make views that already show the edit reload the real tags.
+            self.dataChanged.emit(image_index, image_index)
+            return
         image.tags = tags
         self.dataChanged.emit(image_index, image_index)
         self.write_image_tags_to_disk(image)
@@ -482,10 +520,16 @@ class ImageListModel(QAbstractListModel):
         action_name = f'Add {pluralize("Tag", len(tags))}'
         should_ask_for_confirmation = len(image_indices) > 1
         self.add_to_undo_stack(action_name, should_ask_for_confirmation)
+        skipped_count = 0
         for image_index in image_indices:
             image: Image = self.data(image_index, Qt.ItemDataRole.UserRole)
+            if self.is_completed(image):
+                skipped_count += 1
+                continue
             image.tags.extend(tags)
             self.write_image_tags_to_disk(image)
+        if skipped_count:
+            self.locked_images_skipped.emit(skipped_count)
         min_image_index = min(image_indices, key=lambda index: index.row())
         max_image_index = max(image_indices, key=lambda index: index.row())
         self.dataChanged.emit(min_image_index, max_image_index)
@@ -498,7 +542,7 @@ class ImageListModel(QAbstractListModel):
             action_name=f'Rename {pluralize("Tag", len(old_tags))}',
             should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if not self.is_image_in_scope(scope, image_index, image):
                 continue
             if use_regex:
@@ -528,7 +572,7 @@ class ImageListModel(QAbstractListModel):
             action_name=f'Delete {pluralize("Tag", len(tags))}',
             should_ask_for_confirmation=True)
         changed_image_indices = []
-        for image_index, image in enumerate(self.images):
+        for image_index, image in self.editable_images():
             if not self.is_image_in_scope(scope, image_index, image):
                 continue
             if use_regex:
@@ -549,3 +593,129 @@ class ImageListModel(QAbstractListModel):
         if changed_image_indices:
             self.dataChanged.emit(self.index(changed_image_indices[0]),
                                   self.index(changed_image_indices[-1]))
+
+    # Completed images (tags locked) ------------------------------------
+
+    def image_key(self, image: Image) -> str:
+        if self.directory_path is None:
+            return image.path.name
+        return relative_key(self.directory_path, image.path)
+
+    def is_completed(self, image: Image) -> bool:
+        return bool(self.completed) and self.image_key(image) in self.completed
+
+    def editable_images(self):
+        """(index, image) for every image whose tags are not locked."""
+        skipped_count = 0
+        for image_index, image in enumerate(self.images):
+            if self.is_completed(image):
+                skipped_count += 1
+                continue
+            yield image_index, image
+        if skipped_count:
+            self.locked_images_skipped.emit(skipped_count)
+
+    def set_completed(self, images: list[Image], is_completed: bool):
+        for image in images:
+            key = self.image_key(image)
+            if is_completed:
+                self.completed.add(key)
+            else:
+                self.completed.discard(key)
+        if self.directory_path is not None:
+            save_completed(self.directory_path, self.completed,
+                           self.dataset_state_dir)
+        rows = [self.images.index(image) for image in images
+                if image in self.images]
+        if rows:
+            self.dataChanged.emit(self.index(min(rows)),
+                                  self.index(max(rows)))
+        self.completed_images_changed.emit()
+
+    def toggle_completed(self, images: list[Image]) -> bool:
+        """Mark the images complete, or incomplete if they all already are.
+        Returns the new state."""
+        if not images:
+            return False
+        new_state = not all(self.is_completed(image) for image in images)
+        self.set_completed(images, new_state)
+        return new_state
+
+    # Natural-language caption ------------------------------------------
+
+    def update_image_nl(self, image_index: QModelIndex, nl: str,
+                        append: bool = False,
+                        add_to_undo_stack: bool = False) -> bool:
+        image: Image = self.data(image_index, Qt.ItemDataRole.UserRole)
+        nl = (nl or '').strip()
+        if append and image.nl.strip() and nl:
+            nl = f'{image.nl.strip()} {nl}'
+        if image.nl == nl:
+            return False
+        if self.is_completed(image):
+            self.locked_images_skipped.emit(1)
+            self.dataChanged.emit(image_index, image_index)
+            return False
+        if add_to_undo_stack:
+            self.add_to_undo_stack(action_name='Edit Natural Language',
+                                   should_ask_for_confirmation=False)
+        image.nl = nl
+        self.write_image_tags_to_disk(image)
+        self.dataChanged.emit(image_index, image_index)
+        return True
+
+    # Bulk edits ported from TagBench -----------------------------------
+
+    def strip_at_tags(self) -> int:
+        """Remove artist tags that start with `@` from every image. Returns
+        the number of removed tags."""
+        self.add_to_undo_stack(action_name='Strip @ Tags',
+                               should_ask_for_confirmation=True)
+        changed_image_indices = []
+        removed_tag_count = 0
+        for image_index, image in self.editable_images():
+            kept = [tag for tag in image.tags
+                    if not tag.lstrip().startswith('@')]
+            if len(kept) == len(image.tags):
+                continue
+            removed_tag_count += len(image.tags) - len(kept)
+            image.tags = kept
+            changed_image_indices.append(image_index)
+            self.write_image_tags_to_disk(image)
+        if changed_image_indices:
+            self.dataChanged.emit(self.index(changed_image_indices[0]),
+                                  self.index(changed_image_indices[-1]))
+        return removed_tag_count
+
+    def merge_tags_into(self, copies: dict[Path, list[Path]]) -> int:
+        """For duplicate removal: add the tags of the `from` images that the
+        `to` image does not have yet. Returns the number of changed
+        images."""
+        by_path = {image.path: image for image in self.images}
+        changed_rows = []
+        for to_path, from_paths in copies.items():
+            target = by_path.get(to_path)
+            if target is None or self.is_completed(target):
+                continue
+            have = set(target.tags)
+            added = []
+            for from_path in from_paths:
+                source = by_path.get(from_path)
+                if source is None:
+                    continue
+                for tag in source.tags:
+                    if tag not in have:
+                        have.add(tag)
+                        added.append(tag)
+            if not added:
+                continue
+            if not changed_rows:
+                self.add_to_undo_stack(action_name='Copy Duplicate Tags',
+                                       should_ask_for_confirmation=True)
+            target.tags = target.tags + added
+            self.write_image_tags_to_disk(target)
+            changed_rows.append(self.images.index(target))
+        if changed_rows:
+            self.dataChanged.emit(self.index(min(changed_rows)),
+                                  self.index(max(changed_rows)))
+        return len(changed_rows)
