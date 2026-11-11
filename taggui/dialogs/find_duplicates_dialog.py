@@ -1,37 +1,46 @@
 """Find Duplicate Images (ported from TagBench). Groups look-alike images,
 lets you pick which to keep, optionally copies the dropped images' tags onto
 the kept ones, and moves the rest (and their captions) to the trash."""
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event
 from pathlib import Path
 
-from PySide6.QtCore import QFile, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QImageReader, QPixmap
-from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QFrame,
+from PySide6.QtCore import QSize, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QIcon, QImage, QImageReader, QPixmap
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame,
                                QHBoxLayout, QLabel, QMessageBox, QProgressBar,
                                QPushButton, QScrollArea, QSlider, QToolButton,
                                QVBoxLayout, QWidget)
 
 from models.image_list_model import ImageListModel
 from utils.duplicates import (DEFAULT_STRICTNESS, MAX_STRICTNESS,
-                              Fingerprint, apart, default_keeper,
-                              fingerprint, group_duplicates, group_id,
+                              Fingerprint, FingerprintArrays,
+                              FingerprintCache, apart, default_cache_path,
+                              default_keeper, fingerprint_all, group_id,
                               plan_removal)
 from utils.flow_layout import FlowLayout
 from utils.image import Image
+from utils.trash import move_images_to_trash
 from utils.utils import get_confirmation_dialog_reply, pluralize
 
 THUMBNAIL_SIZE = 140
 CARD_WIDTH = THUMBNAIL_SIZE + 70
+CARD_STYLE = ('QToolButton { border: 2px solid palette(mid); '
+              'border-radius: 8px; padding: 6px; }'
+              'QToolButton:checked { border: 3px solid #2e7d32; '
+              'background: rgba(46, 125, 50, 50); }')
 
 
-def load_thumbnail(image: Image) -> QIcon:
-    reader = QImageReader(str(image.path))
+def load_thumbnail_image(path: Path) -> QImage:
+    """Runs on a worker thread (QImage, unlike QPixmap, is thread-safe)."""
+    reader = QImageReader(str(path))
     reader.setAutoTransform(True)
     size = reader.size()
     if size.isValid() and size.width() and size.height():
         reader.setScaledSize(size.scaled(QSize(THUMBNAIL_SIZE * 2,
                                                THUMBNAIL_SIZE * 2),
                                          Qt.AspectRatioMode.KeepAspectRatio))
-    return QIcon(QPixmap.fromImageReader(reader))
+    return reader.read()
 
 
 class DuplicateCard(QToolButton):
@@ -48,11 +57,6 @@ class DuplicateCard(QToolButton):
         font.setPointSizeF(max(8.0, font.pointSizeF() * 0.8))
         self.setFont(font)
         self.setToolTip(str(image.path))
-        self.setStyleSheet(
-            'QToolButton { border: 2px solid palette(mid); border-radius: 8px;'
-            ' padding: 6px; }'
-            'QToolButton:checked { border: 3px solid #2e7d32; '
-            'background: rgba(46, 125, 50, 50); }')
 
     def set_status(self, text: str):
         name = self.fontMetrics().elidedText(
@@ -61,8 +65,35 @@ class DuplicateCard(QToolButton):
         self.setText(f'{name}\n{text}')
 
 
+class FingerprintThread(QThread):
+    """Reads the images on a pool of threads, off the GUI thread."""
+    progress = Signal(int)
+    fingerprints_ready = Signal(list)
+
+    def __init__(self, paths: list[Path]):
+        super().__init__()
+        self.paths = paths
+        self.cancel_event = Event()
+        self.last_progress = 0
+
+    def report(self, done: int):
+        # Fewer signals: every 32 images and at the end.
+        if done - self.last_progress >= 32 or done == len(self.paths):
+            self.last_progress = done
+            self.progress.emit(done)
+
+    def run(self):
+        cache = FingerprintCache(default_cache_path())
+        fingerprints = fingerprint_all(self.paths, cache,
+                                       progress=self.report,
+                                       cancel=self.cancel_event)
+        if fingerprints is not None:
+            self.fingerprints_ready.emit(fingerprints)
+
+
 class FindDuplicatesDialog(QDialog):
     directory_reload_requested = Signal()
+    images_deleted = Signal(list)
 
     def __init__(self, parent, image_list_model: ImageListModel):
         super().__init__(parent)
@@ -70,11 +101,22 @@ class FindDuplicatesDialog(QDialog):
         self.images: list[Image] = list(image_list_model.images)
         self.by_path = {image.path: image for image in self.images}
         self.fingerprints: list[Fingerprint] = []
+        self.fingerprint_arrays: FingerprintArrays | None = None
+        self.fingerprint_thread: FingerprintThread | None = None
         self.by_key: dict[Path, Fingerprint] = {}
         self.groups: list[list[Path]] = []
         # Group id -> the paths chosen to keep.
         self.keep: dict[tuple, list[Path]] = {}
         self.icons: dict[Path, QIcon] = {}
+        self._tag_counts: dict[Path, int] | None = None
+        # Thumbnails load on worker threads and fill in the cards as they
+        # arrive.
+        self.thumbnail_pool = ThreadPoolExecutor(max_workers=4)
+        self.pending_thumbnails: dict[Path, Future] = {}
+        self.cards_by_path: dict[Path, list] = {}
+        self.thumbnail_timer = QTimer(self)
+        self.thumbnail_timer.setInterval(50)
+        self.thumbnail_timer.timeout.connect(self.collect_thumbnails)
         self.is_canceled = False
         self.dropped_count = 0
 
@@ -109,6 +151,8 @@ class FindDuplicatesDialog(QDialog):
         layout.addWidget(hint)
 
         self.groups_widget = QWidget()
+        # The card style, set once here rather than on every card (faster).
+        self.groups_widget.setStyleSheet(CARD_STYLE)
         self.groups_layout = QVBoxLayout(self.groups_widget)
         self.groups_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll_area = QScrollArea()
@@ -132,7 +176,14 @@ class FindDuplicatesDialog(QDialog):
 
     def reject(self):
         self.is_canceled = True
+        self.stop_fingerprinting()
         super().reject()
+
+    def stop_fingerprinting(self):
+        thread = self.fingerprint_thread
+        if thread is not None and thread.isRunning():
+            thread.cancel_event.set()
+            thread.wait()
 
     def update_strictness_label(self):
         value = self.strictness_slider.value()
@@ -140,27 +191,35 @@ class FindDuplicatesDialog(QDialog):
             f'Strictness {value}' + (' (looks identical)' if value == 0
                                      else ''))
 
-    def compute_fingerprints(self) -> bool:
-        """Fingerprint every image, keeping the dialog responsive. Returns
-        False if the dialog was closed first."""
+    def compute_fingerprints(self):
+        """Fingerprint every image on worker threads; the dialog stays
+        responsive and groups appear when it is done."""
         self.progress_bar.setRange(0, len(self.images))
+        self.progress_bar.setValue(0)
         self.progress_bar.show()
-        for i, image in enumerate(self.images):
-            if self.is_canceled:
-                return False
-            try:
-                self.fingerprints.append(fingerprint(image.path))
-            except OSError:
-                continue
-            if i % 4 == 0:
-                self.progress_bar.setValue(i + 1)
-                QApplication.processEvents()
+        self.strictness_slider.setEnabled(False)
+        thread = FingerprintThread([image.path for image in self.images])
+        thread.progress.connect(self.progress_bar.setValue)
+        thread.fingerprints_ready.connect(self.set_fingerprints)
+        self.fingerprint_thread = thread
+        thread.start()
+
+    def set_fingerprints(self, fingerprints: list[Fingerprint]):
+        if self.is_canceled:
+            return
+        self.fingerprints = fingerprints
+        self.fingerprint_arrays = FingerprintArrays(fingerprints)
         self.by_key = {fp.key: fp for fp in self.fingerprints}
         self.progress_bar.hide()
-        return True
+        self.strictness_slider.setEnabled(True)
+        self.regroup()
 
     def tag_counts(self) -> dict[Path, int]:
-        return {image.path: len(image.tags) for image in self.images}
+        # The dialog is modal, so the tags do not change while it is open.
+        if self._tag_counts is None:
+            self._tag_counts = {image.path: len(image.tags)
+                                for image in self.images}
+        return self._tag_counts
 
     def keepers_of(self, group: list[Path]) -> list[Path]:
         chosen = [key for key in self.keep.get(group_id(group), [])
@@ -169,16 +228,45 @@ class FindDuplicatesDialog(QDialog):
 
     def regroup(self):
         self.update_strictness_label()
-        self.groups = group_duplicates(self.fingerprints,
-                                       self.strictness_slider.value())
+        if self.fingerprint_arrays is None:
+            return
+        self.groups = self.fingerprint_arrays.group(
+            self.strictness_slider.value())
         self.render_groups()
 
     def icon_for(self, image: Image) -> QIcon:
-        if image.path not in self.icons:
-            self.icons[image.path] = load_thumbnail(image)
-        return self.icons[image.path]
+        icon = self.icons.get(image.path)
+        if icon is not None:
+            return icon
+        if image.path not in self.pending_thumbnails:
+            self.pending_thumbnails[image.path] = self.thumbnail_pool.submit(
+                load_thumbnail_image, image.path)
+            self.thumbnail_timer.start()
+        return QIcon()
+
+    def collect_thumbnails(self):
+        for path, future in list(self.pending_thumbnails.items()):
+            if not future.done():
+                continue
+            del self.pending_thumbnails[path]
+            try:
+                thumbnail = future.result()
+            except Exception:
+                thumbnail = QImage()
+            icon = QIcon(QPixmap.fromImage(thumbnail))
+            self.icons[path] = icon
+            for card in self.cards_by_path.get(path, []):
+                card.setIcon(icon)
+        if not self.pending_thumbnails:
+            self.thumbnail_timer.stop()
+
+    def done(self, result: int):
+        self.thumbnail_timer.stop()
+        self.thumbnail_pool.shutdown(wait=False, cancel_futures=True)
+        super().done(result)
 
     def render_groups(self):
+        self.cards_by_path = {}
         while self.groups_layout.count():
             item = self.groups_layout.takeAt(0)
             if item.widget() is not None:
@@ -204,6 +292,7 @@ class FindDuplicatesDialog(QDialog):
                 if image is None:
                     continue
                 card = DuplicateCard(image, self.icon_for(image))
+                self.cards_by_path.setdefault(key, []).append(card)
                 is_kept = key in keepers
                 card.setChecked(is_kept)
                 card.set_status('Keep' if is_kept
@@ -253,28 +342,19 @@ class FindDuplicatesDialog(QDialog):
             return
         if copies:
             self.image_list_model.merge_tags_into(copies)
-        failed = []
-        for path in drop:
-            if not QFile(str(path)).moveToTrash():
-                failed.append(path)
-                continue
-            caption_path = path.with_suffix('.txt')
-            caption_file = QFile(str(caption_path))
-            if caption_file.exists() and not caption_file.moveToTrash():
-                failed.append(caption_path)
+        result = move_images_to_trash(self, drop,
+                                      keep_caption_if_image_fails=True)
+        failed = [path for path, _ in result.failed]
         if failed:
             QMessageBox.critical(
                 self, 'Error', 'Failed to move to the trash:\n'
                 + '\n'.join(str(path) for path in failed[:20]))
-        self.dropped_count = len(drop) - len(
-            [path for path in failed if path.suffix != '.txt'])
-        self.directory_reload_requested.emit()
+        self.dropped_count = len(result.trashed)
+        self.images_deleted.emit(result.trashed)
         self.accept()
 
     def exec(self) -> int:
-        self.show()
-        QApplication.processEvents()
-        if not self.compute_fingerprints():
-            return QDialog.DialogCode.Rejected
-        self.regroup()
-        return super().exec()
+        self.compute_fingerprints()
+        result = super().exec()
+        self.stop_fingerprinting()
+        return result

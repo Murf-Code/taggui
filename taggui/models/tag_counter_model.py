@@ -71,6 +71,17 @@ class TagCounterModel(QAbstractListModel):
             return True
         return False
 
+    def remove_images_tags(self, images: list[Image]):
+        """Update the counts for removed images without counting every
+        image again."""
+        for image in images:
+            self.tag_counter.subtract(image.tags)
+        for tag in {tag for image in images for tag in image.tags}:
+            if self.tag_counter[tag] <= 0:
+                del self.tag_counter[tag]
+        self.most_common_tags = self.tag_counter.most_common()
+        self.modelReset.emit()
+
     @Slot()
     def count_tags(self, images: list[Image]):
         self.tag_counter.clear()

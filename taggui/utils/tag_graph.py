@@ -310,28 +310,62 @@ def grouped(tags: list[tuple[str, int]], edges: list[Edge]
 
 
 def graph_from(tag_lists: list[list[str]]):
-    """Tag counts and co-occurrence links of the 90 most common tags."""
+    """Tag counts and co-occurrence links of the 90 most common tags.
+
+    Same result as counting every pair of tags on every image, but only
+    pairs among the top tags are counted, with numpy, so it stays quick on
+    tens of thousands of images."""
     counts: dict[str, list] = {}
-    pair: dict[tuple[str, str], int] = {}
+    lowered_lists = []
     for item_tags in tag_lists:
-        unique = list(dict.fromkeys(tag.lower() for tag in item_tags))
-        for tag in item_tags:
-            key = tag.lower()
-            if key in counts:
-                counts[key][1] += 1
-            else:
+        lowered = [tag.lower() for tag in item_tags]
+        lowered_lists.append(lowered)
+        for tag, key in zip(item_tags, lowered):
+            entry = counts.get(key)
+            if entry is None:
                 counts[key] = [tag, 1]
-        for i in range(len(unique)):
-            for j in range(i + 1, len(unique)):
-                a, b = unique[i], unique[j]
-                key = (a, b) if a < b else (b, a)
-                pair[key] = pair.get(key, 0) + 1
+            else:
+                entry[1] += 1
     all_tags = sorted(((label, count) for label, count in counts.values()),
                       key=lambda tag: (-tag[1], tag[0].casefold()))
     tags = all_tags[:MAX_GRAPH_TAGS]
-    keep = {label.lower() for label, _ in tags}
-    edges = sorted((Edge(a, b, w) for (a, b), w in pair.items()
-                    if a in keep and b in keep), key=lambda edge: -edge.w)
+    keep = [label.lower() for label, _ in tags]
+    column_of = {key: column for column, key in enumerate(keep)}
+    width = len(keep)
+    # For each image, where each kept tag sits among its unique tags
+    # (-1 when absent). The order decides ties, as in the plain loop.
+    rows, columns, places = [], [], []
+    for row, lowered in enumerate(lowered_lists):
+        for place, key in enumerate(dict.fromkeys(lowered)):
+            column = column_of.get(key)
+            if column is not None:
+                rows.append(row)
+                columns.append(column)
+                places.append(place)
+    edges: list[Edge] = []
+    if width > 1 and rows:
+        position = np.full((len(tag_lists), width), -1, np.int64)
+        position[rows, columns] = places
+        present = position >= 0
+        weights = present.T.astype(np.int64) @ present.astype(np.int64)
+        found = []
+        for i in range(width - 1):
+            both = present[:, i:i + 1] & present[:, i + 1:]
+            firsts = np.argmax(both, axis=0)
+            for offset in np.nonzero(weights[i, i + 1:])[0].tolist():
+                j = i + 1 + offset
+                first = int(firsts[offset])
+                place_i = int(position[first, i])
+                place_j = int(position[first, j])
+                a, b = keep[i], keep[j]
+                key = (a, b) if a < b else (b, a)
+                found.append(((first, min(place_i, place_j),
+                               max(place_i, place_j)), key,
+                              int(weights[i, j])))
+        # First seen order, then the heaviest first (a stable sort).
+        found.sort(key=lambda item: item[0])
+        edges = sorted((Edge(a, b, w) for _, (a, b), w in found),
+                       key=lambda edge: -edge.w)
     link_counts: dict[str, int] = {}
     for edge in edges:
         link_counts[edge.a] = link_counts.get(edge.a, 0) + 1

@@ -191,6 +191,30 @@ class ImageListModel(QAbstractListModel):
         self.images.sort(key=lambda image_: image_.path)
         self.modelReset.emit()
 
+    def remove_images(self, paths: set[Path]) -> list[Image]:
+        """Take deleted images out of the list in place, in contiguous
+        blocks of rows, without reading the folder again. The other images
+        keep their order. Like reloading the folder, this clears undo and
+        redo. Returns the removed images."""
+        rows = [row for row, image in enumerate(self.images)
+                if image.path in paths]
+        removed = [self.images[row] for row in rows]
+        # Remove from the bottom so the earlier row numbers stay valid.
+        end = len(rows) - 1
+        while end >= 0:
+            start = end
+            while start > 0 and rows[start - 1] == rows[start] - 1:
+                start -= 1
+            first, last = rows[start], rows[end]
+            self.beginRemoveRows(QModelIndex(), first, last)
+            del self.images[first:last + 1]
+            self.endRemoveRows()
+            end = start - 1
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.update_undo_and_redo_actions_requested.emit()
+        return removed
+
     def add_to_undo_stack(self, action_name: str,
                           should_ask_for_confirmation: bool):
         """Add the current state of the image tags to the undo stack."""
@@ -692,6 +716,7 @@ class ImageListModel(QAbstractListModel):
         `to` image does not have yet. Returns the number of changed
         images."""
         by_path = {image.path: image for image in self.images}
+        row_of = {id(image): row for row, image in enumerate(self.images)}
         changed_rows = []
         for to_path, from_paths in copies.items():
             target = by_path.get(to_path)
@@ -714,7 +739,7 @@ class ImageListModel(QAbstractListModel):
                                        should_ask_for_confirmation=True)
             target.tags = target.tags + added
             self.write_image_tags_to_disk(target)
-            changed_rows.append(self.images.index(target))
+            changed_rows.append(row_of[id(target)])
         if changed_rows:
             self.dataChanged.emit(self.index(min(changed_rows)),
                                   self.index(max(changed_rows)))

@@ -259,6 +259,8 @@ class MainWindow(QMainWindow):
         self.view_rail.show()
         self.place_view_rail()
         self.refresh_explore()
+        # The model reset already did it; do not run it twice.
+        self.explore_timer.stop()
         self.update_hotkey_zone(None, self.app.focusWidget())
 
     @Slot()
@@ -290,6 +292,25 @@ class MainWindow(QMainWindow):
             select_index = self.proxy_image_list_model.rowCount() - 1
         self.image_list.list_view.setCurrentIndex(
             self.proxy_image_list_model.index(select_index, 0))
+
+    @Slot(list)
+    def remove_deleted_images(self, paths: list[Path]):
+        """After deleting images, take them out of the list (no folder
+        rescan) and select the same row as reloading the folder would."""
+        select_index_key = ('image_index'
+                            if self.proxy_image_list_model.filter is None
+                            else 'filtered_image_index')
+        select_index = self.settings.value(select_index_key, type=int) or 0
+        removed = self.image_list_model.remove_images(set(paths))
+        self.tag_counter_model.remove_images_tags(removed)
+        self.image_list_selection_model.clearCurrentIndex()
+        if select_index >= self.proxy_image_list_model.rowCount():
+            select_index = self.proxy_image_list_model.rowCount() - 1
+        self.image_list.list_view.setCurrentIndex(
+            self.proxy_image_list_model.index(select_index, 0))
+        self.image_tags_editor.refresh_lock()
+        self.explore_timer.start()
+        self.refresh_waterfall()
 
     @Slot()
     def show_settings_dialog(self):
@@ -593,6 +614,8 @@ class MainWindow(QMainWindow):
                 self.image_list.list_view.currentIndex()))
         self.image_list.list_view.directory_reload_requested.connect(
             self.reload_directory)
+        self.image_list.list_view.images_deleted.connect(
+            self.remove_deleted_images)
         self.image_list.list_view.tags_paste_requested.connect(
             self.image_list_model.add_tags)
         self.image_list.missing_tags_check_box.toggled.connect(
@@ -797,6 +820,7 @@ class MainWindow(QMainWindow):
             return
         dialog = FindDuplicatesDialog(self, self.image_list_model)
         dialog.directory_reload_requested.connect(self.reload_directory)
+        dialog.images_deleted.connect(self.remove_deleted_images)
         dialog.exec()
         if dialog.dropped_count:
             self.show_status(

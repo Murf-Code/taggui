@@ -4,7 +4,7 @@ from functools import reduce
 from operator import or_
 from pathlib import Path
 
-from PySide6.QtCore import (QFile, QItemSelection, QItemSelectionModel,
+from PySide6.QtCore import (QItemSelection, QItemSelectionModel,
                             QItemSelectionRange, QModelIndex, QSize, QUrl, Qt,
                             Signal, Slot)
 from PySide6.QtGui import QDesktopServices
@@ -21,6 +21,7 @@ from models.proxy_image_list_model import ProxyImageListModel
 from utils.app_paths import show_in_file_manager
 from utils.image import Image
 from utils.settings import get_settings
+from utils.trash import move_images_to_trash
 from widgets.image_card_delegate import ImageCardDelegate
 from utils.settings_widgets import SettingsComboBox
 from utils.utils import get_confirmation_dialog_reply, pluralize
@@ -102,6 +103,7 @@ class SelectionMode(str, Enum):
 class ImageListView(QListView):
     tags_paste_requested = Signal(list, list)
     directory_reload_requested = Signal()
+    images_deleted = Signal(list)
     # Emitted with the new state after Mark Complete / Mark Incomplete.
     completion_toggled = Signal(bool, int)
 
@@ -359,19 +361,13 @@ class ImageListView(QListView):
         reply = get_confirmation_dialog_reply(title, question)
         if reply != QMessageBox.StandardButton.Yes:
             return
-        for image in selected_images:
-            image_file = QFile(image.path)
-            if not image_file.moveToTrash():
-                QMessageBox.critical(self, 'Error',
-                                     f'Failed to delete {image.path}.')
-            caption_file_path = image.path.with_suffix('.txt')
-            caption_file = QFile(caption_file_path)
-            if caption_file.exists():
-                if not caption_file.moveToTrash():
-                    QMessageBox.critical(self, 'Error',
-                                         f'Failed to delete '
-                                         f'{caption_file_path}.')
-        self.directory_reload_requested.emit()
+        result = move_images_to_trash(
+            self, [image.path for image in selected_images])
+        for path, _ in result.failed:
+            QMessageBox.critical(self, 'Error', f'Failed to delete {path}.')
+        # Drop the deleted images from the list instead of reading the whole
+        # folder again.
+        self.images_deleted.emit(result.trashed)
 
     @Slot()
     def open_image(self):

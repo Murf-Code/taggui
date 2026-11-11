@@ -135,3 +135,78 @@ def test_view_shortcuts(window, qapp):
     assert window.view == 'constellation'
     keys['Ctrl+1'].activated.emit()
     assert window.view == 'tags'
+
+
+def make_trash(monkeypatch):
+    """A trash can on the same drive as the test images."""
+    import os
+    from pathlib import Path
+    from PySide6.QtWidgets import QMessageBox
+    data = Path(os.environ['XDG_DATA_HOME'])
+    for name in ('files', 'info'):
+        (data / 'Trash' / name).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(QMessageBox, 'critical', staticmethod(
+        lambda *args: pytest.fail(f'trash failed: {args[2]}')))
+
+
+def test_delete_images_skips_folder_rescan(window, qapp, monkeypatch):
+    import widgets.image_list as image_list
+    from PySide6.QtWidgets import QMessageBox
+    make_trash(monkeypatch)
+    monkeypatch.setattr(image_list, 'get_confirmation_dialog_reply',
+                        lambda *args: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(window.image_list_model, 'load_directory',
+                        lambda *args: pytest.fail('folder was rescanned'))
+    view = window.image_list.list_view
+    view.setCurrentIndex(window.proxy_image_list_model.index(1, 0))
+    qapp.processEvents()
+    view.delete_selected_images()
+    qapp.processEvents()
+    assert visible_names(window) == ['a.png', 'c.png']
+    assert not (window.directory_path / 'b.png').exists()
+    assert not (window.directory_path / 'b.txt').exists()
+    from collections import Counter
+    expected = Counter()
+    for image in window.image_list_model.images:
+        expected.update(image.tags)
+    assert window.tag_counter_model.tag_counter == expected
+    assert view.currentIndex().row() == 1
+
+
+def test_remove_images_keeps_order(window, qapp):
+    model = window.image_list_model
+    names = [image.path.name for image in model.images]
+    removed = model.remove_images({model.images[0].path,
+                                   model.images[2].path})
+    assert [image.path.name for image in removed] == [names[0], names[2]]
+    assert [image.path.name for image in model.images] == [names[1]]
+    assert visible_names(window) == [names[1]]
+
+
+def test_find_duplicates_drop_the_others(window, qapp, monkeypatch):
+    import shutil
+    import dialogs.find_duplicates_dialog as dialog_module
+    from PySide6.QtWidgets import QMessageBox
+    make_trash(monkeypatch)
+    folder = window.directory_path
+    shutil.copy(folder / 'a.png', folder / 'd.png')
+    (folder / 'd.txt').write_text('cat, extra', encoding='utf-8')
+    window.reload_directory()
+    qapp.processEvents()
+    monkeypatch.setattr(dialog_module, 'get_confirmation_dialog_reply',
+                        lambda **kwargs: QMessageBox.StandardButton.Yes)
+    dialog = dialog_module.FindDuplicatesDialog(window,
+                                                window.image_list_model)
+    dialog.images_deleted.connect(window.remove_deleted_images)
+    dialog.compute_fingerprints()
+    dialog.fingerprint_thread.wait()
+    for _ in range(20):
+        qapp.processEvents()
+    # Every image is blue and 32x32, so they all look alike.
+    assert dialog.groups and len(dialog.groups[0]) == 4
+    dialog.strictness_slider.setValue(0)
+    dialog.drop_others()
+    qapp.processEvents()
+    assert dialog.dropped_count == 3
+    assert len(window.image_list_model.images) == 1
+    dialog.done(0)
