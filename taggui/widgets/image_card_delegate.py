@@ -1,15 +1,15 @@
-"""Draws each image in the image list as a card: the thumbnail with the file
-name under it. Completed (locked) images get a green check badge."""
+"""Draws each image in the image list as a picture card like TagBench's image
+list (src/App.tsx `.tb-row`, src/index.css): a square thumbnail, the file
+name as a tooltip, a purple tint on selected images, a bar on the current
+one, and a green border with a check mark on images marked complete."""
 from PySide6.QtCore import QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
-
-from utils.image import Image
 
 # Model role that says whether an image is marked complete.
 COMPLETED_ROLE = Qt.ItemDataRole.UserRole + 1
-CARD_MARGIN = 5
-CARD_PADDING = 6
+CARD_MARGIN = 2
+CARD_PADDING = 3
 CARD_RADIUS = 8
 
 
@@ -19,100 +19,70 @@ class ImageCardDelegate(QStyledItemDelegate):
         self.view = view
         self.image_width = image_width
 
-    def available_width(self) -> int:
+    def side(self) -> int:
         viewport_width = self.view.viewport().width()
-        return max(48, viewport_width - 2 * (CARD_MARGIN + CARD_PADDING))
-
-    def thumbnail_size(self, image: Image) -> QSize:
-        width = min(self.image_width, self.available_width())
-        if image is None or not image.dimensions or not image.dimensions[0]:
-            return QSize(width, width)
-        image_width, image_height = image.dimensions
-        height = int(width * image_height / image_width)
-        # Very tall images are capped like the classic list (3x the width).
-        if height > width * 3:
-            height = width * 3
-            width = int(height * image_width / image_height)
-        return QSize(max(1, width), max(1, height))
-
-    def name_height(self, option) -> int:
-        return QFontMetrics(option.font).height() + 4
+        return max(48, min(self.image_width, viewport_width
+                           - 2 * (CARD_MARGIN + CARD_PADDING)))
 
     def sizeHint(self, option, index) -> QSize:
-        image = index.data(Qt.ItemDataRole.UserRole)
-        thumbnail = self.thumbnail_size(image)
-        height = (thumbnail.height() + self.name_height(option)
-                  + 2 * (CARD_MARGIN + CARD_PADDING))
-        return QSize(self.view.viewport().width(), height)
+        return QSize(self.view.viewport().width(),
+                     self.side() + 2 * (CARD_MARGIN + CARD_PADDING))
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        palette = option.palette
-        image: Image = index.data(Qt.ItemDataRole.UserRole)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        is_hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        is_current = self.view.currentIndex() == index
         is_completed = bool(index.data(COMPLETED_ROLE))
-        card = QRectF(option.rect).adjusted(CARD_MARGIN, CARD_MARGIN,
-                                            -CARD_MARGIN, -CARD_MARGIN)
-        base = palette.color(palette.ColorRole.Base)
-        is_dark = base.lightness() < 128
-        background = QColor(base).lighter(135) if is_dark else QColor(
-            base).darker(104)
-        highlight = palette.color(palette.ColorRole.Highlight)
-        if is_selected:
-            background = QColor(highlight)
-            background.setAlpha(70)
-        elif is_hovered:
-            background = background.lighter(115) if is_dark else (
-                background.darker(106))
+        side = self.side()
+        card_width = side + 2 * CARD_PADDING
+        left = option.rect.left() + (option.rect.width() - card_width) / 2
+        card = QRectF(left, option.rect.top() + CARD_MARGIN, card_width,
+                      side + 2 * CARD_PADDING)
         path = QPainterPath()
         path.addRoundedRect(card, CARD_RADIUS, CARD_RADIUS)
-        painter.fillPath(path, background)
         if is_selected:
-            painter.setPen(QPen(highlight, 2))
-            painter.drawPath(path)
-        # Thumbnail.
-        thumbnail_size = self.thumbnail_size(image)
+            painter.fillPath(path, QColor(140, 110, 220, 71))
+        # Square thumbnail, cropped to fill like `object-fit: cover`.
+        thumbnail_rect = QRectF(card.left() + CARD_PADDING,
+                                card.top() + CARD_PADDING, side, side)
+        clip = QPainterPath()
+        clip.addRoundedRect(thumbnail_rect, 6, 6)
+        painter.fillPath(clip, QColor('#111111'))
         icon: QIcon = index.data(Qt.ItemDataRole.DecorationRole)
-        top = int(card.top()) + CARD_PADDING
-        left = int(card.left() + (card.width() - thumbnail_size.width()) / 2)
-        thumbnail_rect = QRect(left, top, thumbnail_size.width(),
-                               thumbnail_size.height())
         if icon is not None and not icon.isNull():
-            pixmap = icon.pixmap(thumbnail_size)
-            clip = QPainterPath()
-            clip.addRoundedRect(QRectF(thumbnail_rect), 5, 5)
-            painter.setClipPath(clip)
-            painter.drawPixmap(thumbnail_rect, pixmap)
-            painter.setClipping(False)
-            if is_completed:
-                painter.fillRect(thumbnail_rect, QColor(0, 0, 0, 70))
-        # File name.
-        name_rect = QRect(int(card.left()) + CARD_PADDING,
-                          thumbnail_rect.bottom() + 3,
-                          int(card.width()) - 2 * CARD_PADDING,
-                          self.name_height(option))
-        metrics = QFontMetrics(option.font)
-        name = image.path.name if image is not None else ''
-        painter.setPen(palette.color(palette.ColorRole.Text))
-        painter.drawText(name_rect, Qt.AlignmentFlag.AlignHCenter
-                         | Qt.AlignmentFlag.AlignVCenter,
-                         metrics.elidedText(name, Qt.TextElideMode.ElideMiddle,
-                                            name_rect.width()))
+            sizes = icon.availableSizes()
+            source = icon.pixmap(sizes[0] if sizes else QSize(side, side))
+            if not source.isNull():
+                scale = max(side / source.width(), side / source.height())
+                width = source.width() * scale
+                height = source.height() * scale
+                target = QRectF(thumbnail_rect.center().x() - width / 2,
+                                thumbnail_rect.center().y() - height / 2,
+                                width, height)
+                painter.setClipPath(clip)
+                painter.drawPixmap(target, source, QRectF(source.rect()))
+                painter.setClipping(False)
         if is_completed:
-            radius = 11
-            center_x = thumbnail_rect.right() - radius - 4
-            center_y = thumbnail_rect.top() + radius + 4
+            painter.setPen(QPen(QColor('#3dcb78'), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+        if is_current:
+            # `box-shadow: inset 3px 0 0`: a bar on the left edge.
+            painter.save()
+            painter.setClipPath(path)
+            painter.fillRect(QRectF(card.left(), card.top(), 3,
+                                    card.height()), QColor('#c9a4f2'))
+            painter.restore()
+        if is_completed:
+            badge = QRectF(card.right() - 8 - 18, card.top() + 8, 18, 18)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor('#2e7d32'))
-            painter.drawEllipse(QRectF(center_x - radius, center_y - radius,
-                                       2 * radius, 2 * radius))
-            pen = QPen(QColor('white'), 2.4)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawLine(center_x - 5, center_y, center_x - 1,
-                             center_y + 4)
-            painter.drawLine(center_x - 1, center_y + 4, center_x + 6,
-                             center_y - 4)
+            painter.setBrush(QColor(12, 12, 16, 184))
+            painter.drawEllipse(badge)
+            font = QFont(option.font)
+            font.setPixelSize(12)
+            painter.setFont(font)
+            painter.setPen(QColor('#9ad29a'))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, '\u2713')
         painter.restore()

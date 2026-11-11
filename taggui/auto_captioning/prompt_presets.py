@@ -28,14 +28,21 @@ TAG2CAPTION_USER_PROMPT = (
     'VERIFIED REFERENCE TAGS FOR THIS IMAGE: {tags}.\n'
     'Ensure your visual caption is consistent with these tags.')
 
+# TagBench sends JoyCaption no instructions for "JoyCaption — caption"; a
+# local server needs a user prompt, so this is Tag2Caption's opening line.
 CAPTION_USER_PROMPT = (
-    'Describe this image concise and accurately for dataset training, in '
-    'one paragraph of plain sentences.')
+    'Describe this image concise and accurately for dataset training.')
 
-SHORT_TAGS_USER_PROMPT = (
-    'List only what is visible, as comma-separated booru tags. No '
-    'sentences. No artist names, signatures, or handles. Put the most '
-    'specific tags first.')
+
+def short_tags_user_prompt(max_tags: int) -> str:
+    """TagBench's `tagInstructions` (src/caption-jobs.ts)."""
+    return ('List only what is visible, as comma-separated booru tags. '
+            'No sentences. No artist names, signatures, or handles. '
+            f'At most {max_tags} tags. Put the most specific tags first.')
+
+
+# TagBench's default "Max tags" (src/AutoCaption.tsx).
+DEFAULT_PRESET_MAX_TAGS = 40
 
 
 @dataclass
@@ -47,28 +54,31 @@ class PromptPreset:
     caption_position: str
     split_tags: bool
     temperature: float | None = None
+    uses_max_tags: bool = False
 
 
+# Names and hints are TagBench's caption modes (src/caption-jobs.ts
+# CAPTION_MODES); the first entry puts back TagGUI's own default prompts.
 PROMPT_PRESETS = [
     PromptPreset(
-        'e621 tags (Prompt Helper default)',
+        'Default prompts',
         'The default tagging prompts. Tags are added after the last tag.',
         DEFAULT_USER_PROMPT, DEFAULT_SYSTEM_PROMPT,
         CaptionPosition.AFTER_LAST_TAG, True),
     PromptPreset(
-        'Booru tags (short)',
-        'Short comma-separated tag list, most specific first.',
-        SHORT_TAGS_USER_PROMPT, DEFAULT_SYSTEM_PROMPT,
-        CaptionPosition.AFTER_LAST_TAG, True),
+        'JoyCaption \u2014 tags',
+        'Comma-separated tags from the picture.',
+        '', DEFAULT_SYSTEM_PROMPT,
+        CaptionPosition.AFTER_LAST_TAG, True, 0.4, uses_max_tags=True),
     PromptPreset(
-        'Natural-language caption',
-        'A plain description written into the natural-language caption.',
+        'JoyCaption \u2014 caption',
+        'A natural description of the picture.',
         CAPTION_USER_PROMPT, GROUNDING_SYSTEM_PROMPT,
         CaptionPosition.NL_REPLACE, False, 0.4),
     PromptPreset(
-        'Tag2Caption (caption from existing tags)',
-        'Turns the tags already on each image into a natural caption '
-        '(TagBench\'s Tag2Caption).',
+        'Tag2Caption',
+        'Turns the tags already on the picture into a natural caption, '
+        'with the same instructions as Tag2Caption.',
         TAG2CAPTION_USER_PROMPT, GROUNDING_SYSTEM_PROMPT,
         CaptionPosition.NL_REPLACE, False, 0.1),
 ]

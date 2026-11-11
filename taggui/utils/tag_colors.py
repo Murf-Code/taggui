@@ -1,19 +1,20 @@
-"""Tag color categories: right-click a tag to give it a color, shown as a
-bar next to the tag in the Image Tags and All Tags lists. Colors are saved
-in the settings and apply in every folder."""
+"""Tag color categories: right-click a tag to give it a color. Every tag is
+also tinted with the color of its group from the Constellation view
+(TagBench's groupColors), shown as a bar and as the text color in the Image
+Tags and All Tags lists. Chosen colors are saved in the settings and apply in
+every folder; a chosen color wins over the group color."""
 import json
 
 from PySide6.QtCore import QObject, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QColorDialog, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QColorDialog, QMenu, QWidget
 
 from utils.settings import get_settings
 
 SETTINGS_KEY = 'tag_colors'
 SWATCHES = ['#c026ff', '#ff4d6d', '#ff8a1e', '#ffe14a', '#2ee6c7',
             '#3aa0ff', '#39e35a']
-SWATCH_NAMES = dict(zip(SWATCHES, ['Purple', 'Pink', 'Orange', 'Yellow',
-                                   'Teal', 'Blue', 'Green']))
+
 
 
 class TagColors(QObject):
@@ -24,6 +25,8 @@ class TagColors(QObject):
         self.settings = settings or get_settings()
         self.colors: dict[str, str] = {}
         self._icons: dict[str, QIcon] = {}
+        # Group colors of the loaded folder, by lowercase tag.
+        self.group_tints: dict[str, str] = {}
         self.load()
 
     def load(self):
@@ -43,6 +46,30 @@ class TagColors(QObject):
         if not tag:
             return None
         return self.colors.get(tag.lower())
+
+    def tint_for(self, tag: str) -> str | None:
+        if not tag:
+            return None
+        return self.color_for(tag) or self.group_tints.get(tag.lower())
+
+    def set_group_tints(self, tints: dict[str, str]):
+        if tints != self.group_tints:
+            self.group_tints = tints
+            self.changed.emit()
+
+    def text_color_for(self, tag: str, is_dark_background: bool
+                       ) -> QColor | None:
+        """The tint as a text color, darkened on light backgrounds so it
+        stays readable."""
+        tint = self.tint_for(tag)
+        if not tint:
+            return None
+        color = QColor(tint)
+        if not is_dark_background:
+            hue, saturation, lightness, _ = color.getHslF()
+            color = QColor.fromHslF(max(hue, 0), saturation,
+                                    min(lightness, 0.36))
+        return color
 
     def set_color(self, tags: list[str], color: str | None):
         for tag in tags:
@@ -69,7 +96,7 @@ class TagColors(QObject):
 
     def icon_for(self, tag: str, height: int = 16) -> QIcon | None:
         """A colored bar used as the item's decoration."""
-        color = self.color_for(tag)
+        color = self.tint_for(tag)
         if not color:
             return None
         key = f'{color}-{height}'
@@ -86,6 +113,13 @@ class TagColors(QObject):
         return self._icons[key]
 
 
+def is_dark_background() -> bool:
+    app = QApplication.instance()
+    if app is None:
+        return False
+    return app.palette().base().color().lightness() < 128
+
+
 def swatch_icon(color: str, size: int = 14) -> QIcon:
     pixmap = QPixmap(size, size)
     pixmap.fill(QColor(color))
@@ -94,17 +128,15 @@ def swatch_icon(color: str, size: int = 14) -> QIcon:
 
 def add_color_menu(menu: QMenu, parent: QWidget, tag_colors: 'TagColors',
                    tags: list[str]):
-    """Add a "Category Color" submenu for the tags to a context menu."""
-    title = 'Category Color' if len(tags) == 1 else (
-        f'Category Color ({len(tags)} Tags)')
+    """Add a "Category" color submenu for the tags to a context menu."""
+    title = 'Category' if len(tags) == 1 else f'Category ({len(tags)} Tags)'
     color_menu = menu.addMenu(title)
     current = tag_colors.color_for(tags[0]) if tags else None
-    color_menu.addAction('No Color',
+    color_menu.addAction('No color',
                          lambda: tag_colors.set_color(tags, None))
     color_menu.addSeparator()
     for color in tag_colors.used_colors():
-        action = color_menu.addAction(swatch_icon(color),
-                                      SWATCH_NAMES.get(color, color),
+        action = color_menu.addAction(swatch_icon(color), color,
                                       lambda c=color: tag_colors.set_color(
                                           tags, c))
         action.setCheckable(True)
@@ -116,7 +148,7 @@ def add_color_menu(menu: QMenu, parent: QWidget, tag_colors: 'TagColors',
         if color.isValid():
             tag_colors.set_color(tags, color.name())
 
-    color_menu.addAction('Custom Color...', pick_custom)
+    color_menu.addAction('Custom color...', pick_custom)
     return color_menu
 
 

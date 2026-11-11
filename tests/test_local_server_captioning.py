@@ -130,7 +130,7 @@ def test_image_is_resized_to_max_side(server, model):
 
 def test_tag2caption_goes_to_natural_language(server, model):
     from auto_captioning.prompt_presets import get_preset
-    preset = get_preset('Tag2Caption (caption from existing tags)')
+    preset = get_preset('Tag2Caption')
     caption_settings = settings(OLLAMA_MODEL_ID, server,
                                 preset.caption_position,
                                 prompt='Write prose about {tags}.')

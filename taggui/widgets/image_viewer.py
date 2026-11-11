@@ -441,9 +441,6 @@ class ImageViewer(QWidget):
         self.redo_button.setToolTip('Redo the last undone crop or removal '
                                     '(Ctrl+Y)')
         self.status_label = QLabel()
-        # Long hints must not widen the window.
-        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                        QSizePolicy.Policy.Preferred)
         toolbar = QHBoxLayout()
         for widget in (self.crop_button, self.remove_button,
                        self.brush_size_label, self.brush_size_spin_box,

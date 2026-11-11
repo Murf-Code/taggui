@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import QKeyCombination, QModelIndex, QUrl, Qt, Slot
+from PySide6.QtCore import (QItemSelectionModel, QKeyCombination,
+                            QModelIndex, QPoint, QTimer, QUrl, Qt, Slot)
 from PySide6.QtGui import (QAction, QCloseEvent, QDesktopServices, QIcon,
                            QKeySequence, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow,
@@ -10,7 +11,9 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow,
 from dialogs.find_duplicates_dialog import FindDuplicatesDialog
 from utils.dataset_export import export_wildcard, export_zip
 from utils.tag_colors import get_tag_colors
+from widgets.explore_view import ConstellationView, ViewRail, WaterfallView
 from widgets.hotkey_bar import HotkeyBar
+from utils.tag_graph import cluster, group_colors
 from transformers import AutoTokenizer
 
 from dialogs.batch_reorder_tags_dialog import BatchReorderTagsDialog
@@ -119,15 +122,12 @@ class MainWindow(QMainWindow):
         self.toggle_all_tags_editor_action = QAction('All Tags', parent=self)
         self.toggle_auto_captioner_action = QAction('Auto-Captioner',
                                                     parent=self)
-        self.show_tags_in_image_list_action = QAction(
-            'Show Tags in Image List', parent=self)
         self.dataset_actions: list[QAction] = []
         self.create_menus()
         # Context-sensitive shortcuts on the left of the status bar; status
         # messages show in the same place for a few seconds.
         self.hotkey_bar = HotkeyBar()
         self.statusBar().addWidget(self.hotkey_bar, 1)
-        self.statusBar().setSizeGripEnabled(True)
         self.app.focusChanged.connect(self.update_hotkey_zone)
         for button in (self.image_viewer.crop_button,
                        self.image_viewer.remove_button):
@@ -169,7 +169,7 @@ class MainWindow(QMainWindow):
         focus_filter_images_box_shortcut.activated.connect(
             self.image_list.raise_)
         focus_filter_images_box_shortcut.activated.connect(
-            self.focus_image_list_filter)
+            self.image_list.filter_line_edit.setFocus)
         focus_add_tag_box_shortcut = QShortcut(QKeySequence('Alt+A'), self)
         focus_add_tag_box_shortcut.activated.connect(
             self.image_tags_editor.raise_)
@@ -203,11 +203,14 @@ class MainWindow(QMainWindow):
             QKeySequence('Ctrl+J'), self)
         jump_to_first_untagged_image_shortcut.activated.connect(
             self.image_list.jump_to_first_untagged_image)
+        self.create_explore_views()
         self.restore()
         self.image_tags_editor.tag_input_box.setFocus()
 
     def closeEvent(self, event: QCloseEvent):
         """Save the window geometry and state before closing."""
+        # Save the docks as they are in the Tags view.
+        self.set_view('tags')
         self.settings.setValue('geometry', self.saveGeometry())
         self.settings.setValue('window_state', self.saveState())
         super().closeEvent(event)
@@ -253,6 +256,9 @@ class MainWindow(QMainWindow):
         self.image_tags_editor.tag_input_box.setDisabled(False)
         self.auto_captioner.start_cancel_button.setDisabled(False)
         self.image_tags_editor.refresh_lock()
+        self.view_rail.show()
+        self.place_view_rail()
+        self.refresh_explore()
         self.update_hotkey_zone(None, self.app.focusWidget())
 
     @Slot()
@@ -345,13 +351,12 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.reload_directory_action)
         file_menu.addSeparator()
         export_zip_action = QAction('Export Dataset as Zip...', parent=self)
-        export_zip_action.setShortcut(QKeySequence('Ctrl+Shift+E'))
         export_zip_action.triggered.connect(self.export_dataset_zip)
         file_menu.addAction(export_zip_action)
         export_wildcard_action = QAction('Export Wildcard File...',
                                          parent=self)
         export_wildcard_action.setToolTip(
-            'One caption per line, for __wildcard__ prompts')
+            'One caption per line, no file names.')
         export_wildcard_action.triggered.connect(self.export_wildcard_file)
         file_menu.addAction(export_wildcard_action)
         file_menu.addSeparator()
@@ -398,17 +403,15 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(remove_empty_tags_action)
         strip_at_tags_action = QAction('Strip @ Tags', parent=self)
         strip_at_tags_action.setToolTip(
-            'Remove artist tags that start with @ from every image')
+            'Removes artist tags that start with @.')
         strip_at_tags_action.triggered.connect(self.strip_at_tags)
         edit_menu.addAction(strip_at_tags_action)
         edit_menu.addSeparator()
         find_duplicates_action = QAction('Find Duplicate Images...',
                                          parent=self)
-        find_duplicates_action.setShortcut(QKeySequence('Ctrl+Shift+D'))
         find_duplicates_action.triggered.connect(
             self.show_find_duplicates_dialog)
         edit_menu.addAction(find_duplicates_action)
-        edit_menu.addAction(self.image_list.list_view.toggle_completed_action)
         self.dataset_actions = [export_zip_action, export_wildcard_action,
                                 strip_at_tags_action, find_duplicates_action]
         for action in self.dataset_actions:
@@ -431,16 +434,6 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.toggle_image_tags_editor_action)
         view_menu.addAction(self.toggle_all_tags_editor_action)
         view_menu.addAction(self.toggle_auto_captioner_action)
-        view_menu.addSeparator()
-        self.show_tags_in_image_list_action.setCheckable(True)
-        self.show_tags_in_image_list_action.setChecked(
-            self.image_list.list_view.show_tags)
-        self.show_tags_in_image_list_action.setToolTip(
-            'Show each thumbnail with its tags beside it instead of as a '
-            'card')
-        self.show_tags_in_image_list_action.toggled.connect(
-            self.set_show_tags_in_image_list)
-        view_menu.addAction(self.show_tags_in_image_list_action)
 
         help_menu = menu_bar.addMenu('Help')
         open_github_repository_action = QAction('GitHub', parent=self)
@@ -548,11 +541,19 @@ class MainWindow(QMainWindow):
             self.image_list.list_view.setCurrentIndex(
                 self.proxy_image_list_model.index(0, 0))
 
+    @Slot(bool)
+    def set_missing_tags_only(self, missing_only: bool):
+        self.proxy_image_list_model.missing_only = missing_only
+        self.proxy_image_list_model.invalidateFilter()
+        self.image_list.list_view.setCurrentIndex(
+            self.proxy_image_list_model.index(0, 0))
+
     @Slot()
     def save_image_index(self, proxy_image_index: QModelIndex):
         """Save the index of the currently selected image."""
         settings_key = ('image_index'
                         if self.proxy_image_list_model.filter is None
+                        and not self.proxy_image_list_model.missing_only
                         else 'filtered_image_index')
         self.settings.setValue(settings_key, proxy_image_index.row())
 
@@ -594,17 +595,14 @@ class MainWindow(QMainWindow):
             self.reload_directory)
         self.image_list.list_view.tags_paste_requested.connect(
             self.image_list_model.add_tags)
-        self.image_list.list_view.completion_toggled.connect(
-            self.show_completion_message)
+        self.image_list.missing_tags_check_box.toggled.connect(
+            self.set_missing_tags_only)
         self.image_list_model.completed_images_changed.connect(
             self.image_tags_editor.refresh_lock)
         self.image_list_model.locked_images_skipped.connect(
             self.show_locked_message)
         self.image_list_model.modelReset.connect(
             self.image_tags_editor.refresh_lock)
-        self.tag_counter_model.modelReset.connect(
-            lambda: self.image_list.filter_chip_bar.set_tags(
-                [tag for tag, _ in self.tag_counter_model.most_common_tags]))
         get_tag_colors().changed.connect(self.refresh_tag_colors)
         # Connecting the signal directly without `isVisible()` causes the menu
         # item to be unchecked when the widget is an inactive tab.
@@ -766,24 +764,9 @@ class MainWindow(QMainWindow):
     def show_status(self, text: str):
         self.statusBar().showMessage(text, STATUS_MESSAGE_TIMEOUT)
 
-    @Slot()
-    def focus_image_list_filter(self):
-        if self.image_list.filter_line_edit.isVisible():
-            self.image_list.filter_line_edit.setFocus()
-        else:
-            self.image_list.filter_chip_bar.tag_input.setFocus()
-
     @Slot(int)
     def show_locked_message(self, count: int):
-        self.show_status(
-            f'Skipped {count} complete {pluralize("image", count)}: their '
-            f'tags are locked. Press Ctrl+K to mark an image incomplete.')
-
-    @Slot(bool, int)
-    def show_completion_message(self, is_completed: bool, count: int):
-        state = 'complete (tags locked)' if is_completed else 'incomplete'
-        self.show_status(f'Marked {count} {pluralize("image", count)} '
-                         f'{state}.')
+        self.show_status('Tags are locked on completed images.')
 
     @Slot(object, str)
     def update_image_nl(self, image: Image, nl: str):
@@ -799,11 +782,6 @@ class MainWindow(QMainWindow):
                      self.all_tags_editor.all_tags_list):
             view.viewport().update()
 
-    @Slot(bool)
-    def set_show_tags_in_image_list(self, show_tags: bool):
-        self.settings.setValue('image_list_show_tags', show_tags)
-        self.image_list.list_view.set_show_tags(show_tags)
-
     @Slot()
     def strip_at_tags(self):
         removed_tag_count = self.image_list_model.strip_at_tags()
@@ -816,7 +794,6 @@ class MainWindow(QMainWindow):
     @Slot()
     def show_find_duplicates_dialog(self):
         if len(self.image_list_model.images) < 2:
-            self.show_status('Load a folder with at least two images first.')
             return
         dialog = FindDuplicatesDialog(self, self.image_list_model)
         dialog.directory_reload_requested.connect(self.reload_directory)
@@ -844,12 +821,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, 'Error',
                                  f'Failed to write {zip_path}: {error}')
             return
-        self.show_status(f'Exported {count} {pluralize("image", count)} and '
-                         f'their captions to {zip_path}.')
+        self.show_status(f'Saved {Path(zip_path).name} \u2014 {count} '
+                         f'{pluralize("picture", count)} and their captions.')
 
     @Slot()
     def export_wildcard_file(self):
         if not self.image_list_model.images or not self.directory_path:
+            return
+        if not any(image.tags or image.nl.strip()
+                   for image in self.image_list_model.images):
+            self.show_status('No captions to put in a wildcard.')
             return
         default_path = str(self.directory_path.parent
                            / f'{self.directory_path.name}.txt')
@@ -865,14 +846,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, 'Error',
                                  f'Failed to write {path}: {error}')
             return
-        self.show_status(
-            f'Wrote {count} {pluralize("caption", count)} to {path}. Use '
-            f'__{Path(path).stem}__ in a prompt.')
+        self.show_status(f'Saved {Path(path).name}. One caption per line, '
+                         f'no file names.')
 
     @Slot()
     def update_hotkey_zone(self, _old=None, widget=None):
         if self.directory_path is None:
             self.hotkey_bar.set_zone('start')
+            return
+        if self.view != 'tags':
+            self.hotkey_bar.set_zone(self.view)
             return
         # While cropping or brushing, its keys matter most wherever focus is.
         mode = str(self.image_viewer.image_label.mode)
@@ -882,7 +865,6 @@ class MainWindow(QMainWindow):
         zone = None
         editor = self.image_tags_editor
         checks = (
-            (self.image_list.filter_chip_bar, 'filter'),
             (self.image_list.filter_line_edit, 'filter'),
             (self.image_list.list_view, 'list'),
             (editor.tag_input_box, 'add'),
@@ -922,3 +904,174 @@ class MainWindow(QMainWindow):
                                                       type=str))
             if directory_path.is_dir():
                 self.load_directory(directory_path, select_index=image_index)
+
+    # Explore views (TagBench's Waterfall and Constellation) ------------
+
+    def create_explore_views(self):
+        self.view = 'tags'
+        self.docks_state = None
+        self.waterfall_view = WaterfallView()
+        self.constellation_view = ConstellationView()
+        self.centralWidget().addWidget(self.waterfall_view)
+        self.centralWidget().addWidget(self.constellation_view)
+        self.waterfall_view.image_clicked.connect(self.select_explore_image)
+        self.waterfall_view.image_menu_requested.connect(
+            self.show_explore_image_menu)
+        self.constellation_view.tag_focused.connect(
+            self.select_first_image_with_tag)
+        self.view_rail = ViewRail(self)
+        self.view_rail.view_requested.connect(self.set_view)
+        self.view_rail.hide()
+        self.view_shortcuts = []
+        for key, view in (('Ctrl+1', 'tags'), ('Ctrl+2', 'waterfall'),
+                          ('Ctrl+3', 'constellation')):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(
+                lambda v=view: self.set_view(v)
+                if self.image_list_model.images else None)
+            self.view_shortcuts.append(shortcut)
+        # Del removes the chosen pictures in the explore views.
+        for view in (self.waterfall_view, self.constellation_view):
+            shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), view)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(
+                self.image_list.list_view.delete_selected_images)
+        # Recompute the tag groups shortly after tags change.
+        self.explore_timer = QTimer(self)
+        self.explore_timer.setSingleShot(True)
+        self.explore_timer.setInterval(300)
+        self.explore_timer.timeout.connect(self.refresh_explore)
+        for signal in (self.image_list_model.modelReset,
+                       self.image_list_model.dataChanged,
+                       get_tag_colors().changed):
+            signal.connect(lambda *_: self.explore_timer.start())
+        self.proxy_image_list_model.modelReset.connect(
+            self.refresh_waterfall)
+        self.proxy_image_list_model.layoutChanged.connect(
+            self.refresh_waterfall)
+        self.image_list_selection_model.selectionChanged.connect(
+            self.refresh_explore_selection)
+        self.image_list_selection_model.currentChanged.connect(
+            self.refresh_explore_selection)
+
+    def place_view_rail(self):
+        self.view_rail.adjustSize()
+        status_height = self.statusBar().height() if (
+            self.statusBar().isVisible()) else 0
+        self.view_rail.move(
+            self.width() - self.view_rail.width() - 10,
+            self.height() - status_height - self.view_rail.height() - 26)
+        self.view_rail.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'view_rail'):
+            self.place_view_rail()
+
+    @Slot(str)
+    def set_view(self, view: str):
+        if view == self.view or not hasattr(self, 'view_rail'):
+            return
+        docks = (self.image_list, self.image_tags_editor,
+                 self.all_tags_editor, self.auto_captioner)
+        if self.view == 'tags':
+            # The explore views fill the window, like in TagBench.
+            self.docks_state = self.saveState()
+            for dock in docks:
+                dock.hide()
+        self.view = view
+        self.view_rail.set_view(view)
+        if view == 'tags':
+            if self.docks_state is not None:
+                self.restoreState(self.docks_state)
+            self.centralWidget().setCurrentWidget(self.image_viewer)
+            self.image_list.list_view.scrollTo(
+                self.image_list.list_view.currentIndex())
+        elif view == 'waterfall':
+            self.refresh_waterfall()
+            self.centralWidget().setCurrentWidget(self.waterfall_view)
+            self.waterfall_view.setFocus()
+        else:
+            self.refresh_explore()
+            self.centralWidget().setCurrentWidget(self.constellation_view)
+            self.constellation_view.canvas.setFocus()
+        self.place_view_rail()
+        self.update_hotkey_zone()
+
+    def visible_images(self) -> list[Image]:
+        model = self.proxy_image_list_model
+        return [model.index(row, 0).data(Qt.ItemDataRole.UserRole)
+                for row in range(model.rowCount())]
+
+    def proxy_index_of(self, image: Image):
+        model = self.proxy_image_list_model
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if index.data(Qt.ItemDataRole.UserRole) is image:
+                return index
+        return None
+
+    @Slot()
+    def refresh_waterfall(self):
+        if self.view == 'waterfall':
+            self.waterfall_view.set_images(self.visible_images())
+            self.refresh_explore_selection()
+
+    @Slot()
+    def refresh_explore(self):
+        """Recompute the tag group colors and, if it is shown, the
+        Constellation."""
+        tag_colors = get_tag_colors()
+        tag_lists = [image.tags for image in self.image_list_model.images]
+        tag_colors.set_group_tints(group_colors(tag_lists))
+        if self.view == 'constellation':
+            self.constellation_view.set_model(
+                cluster(tag_lists, tag_colors.color_for))
+        elif self.view == 'waterfall':
+            self.refresh_waterfall()
+
+    @Slot()
+    def refresh_explore_selection(self, *_):
+        if self.view != 'waterfall':
+            return
+        list_view = self.image_list.list_view
+        current = list_view.currentIndex()
+        active = (current.data(Qt.ItemDataRole.UserRole)
+                  if current.isValid() else None)
+        self.waterfall_view.set_selection(active,
+                                          list_view.get_selected_images())
+
+    @Slot(object, bool)
+    def select_explore_image(self, image: Image, is_ctrl: bool):
+        index = self.proxy_index_of(image)
+        if index is None:
+            return
+        list_view = self.image_list.list_view
+        if is_ctrl:
+            list_view.selectionModel().setCurrentIndex(
+                index, QItemSelectionModel.SelectionFlag.Select)
+        else:
+            list_view.setCurrentIndex(index)
+
+    @Slot(object, QPoint)
+    def show_explore_image_menu(self, image: Image, position: QPoint):
+        index = self.proxy_index_of(image)
+        if index is None:
+            return
+        list_view = self.image_list.list_view
+        if image not in list_view.get_selected_images():
+            list_view.setCurrentIndex(index)
+        list_view.context_menu_index = index
+        list_view.update_context_menu_actions()
+        list_view.context_menu.exec(position)
+        list_view.context_menu_index = None
+
+    @Slot(str)
+    def select_first_image_with_tag(self, tag: str):
+        lowered = tag.lower()
+        for image in self.visible_images():
+            if any(name.lower() == lowered for name in image.tags):
+                index = self.proxy_index_of(image)
+                if index is not None:
+                    self.image_list.list_view.setCurrentIndex(index)
+                return

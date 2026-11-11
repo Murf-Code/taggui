@@ -16,7 +16,9 @@ from auto_captioning.models.local_server import (
     LmStudioBackend, LocalServerError, MAX_IMAGE_SIDE, MIN_IMAGE_SIDE,
     OLLAMA_MODEL_ID, OllamaBackend, is_local_server_model)
 from auto_captioning.models.wd_tagger import WdTagger
-from auto_captioning.prompt_presets import PROMPT_PRESETS, PromptPreset
+from auto_captioning.prompt_presets import (DEFAULT_PRESET_MAX_TAGS,
+                                           PROMPT_PRESETS, PromptPreset,
+                                           short_tags_user_prompt)
 from auto_captioning.models_list import MODELS, get_model_class
 from dialogs.caption_multiple_images_dialog import CaptionMultipleImagesDialog
 from models.image_list_model import ImageListModel
@@ -323,13 +325,7 @@ class CaptionSettingsForm(QVBoxLayout):
         self.local_server_max_tags_spin_box = FocusedScrollSettingsSpinBox(
             key='local_server_max_tags', default=0, minimum=0, maximum=999)
         self.local_server_max_tags_spin_box.setSpecialValueText('No limit')
-        self.local_server_max_tags_spin_box.setToolTip(
-            'Keep only the first tags of each reply (0 keeps them all).')
         self.prompt_preset_button = QPushButton('Load Prompt Preset')
-        self.prompt_preset_button.setToolTip(
-            'Fill the prompts and caption position from a preset. '
-            'Tag2Caption writes a caption from the tags already on each '
-            'image.')
         preset_menu = QMenu(self.prompt_preset_button)
         for preset in PROMPT_PRESETS:
             action = preset_menu.addAction(preset.name)
@@ -361,7 +357,14 @@ class CaptionSettingsForm(QVBoxLayout):
         self.test_server_button.clicked.connect(self.test_local_server)
 
     def apply_prompt_preset(self, preset: PromptPreset):
-        self.prompt_text_edit.setPlainText(preset.user_prompt)
+        user_prompt = preset.user_prompt
+        if preset.uses_max_tags:
+            if not self.local_server_max_tags_spin_box.value():
+                self.local_server_max_tags_spin_box.setValue(
+                    DEFAULT_PRESET_MAX_TAGS)
+            user_prompt = short_tags_user_prompt(
+                self.local_server_max_tags_spin_box.value())
+        self.prompt_text_edit.setPlainText(user_prompt)
         self.system_prompt_text_edit.setPlainText(preset.system_prompt)
         self.caption_position_combo_box.setCurrentText(
             preset.caption_position)

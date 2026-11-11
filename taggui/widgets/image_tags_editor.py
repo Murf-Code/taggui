@@ -1,6 +1,6 @@
 from PySide6.QtCore import (QItemSelectionModel, QModelIndex, QStringListModel,
                             QTimer, Qt, Signal, Slot)
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QPalette
 from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDockWidget,
                                QHBoxLayout, QLabel, QLineEdit, QListView,
                                QMessageBox, QPlainTextEdit, QPushButton,
@@ -213,52 +213,43 @@ class ImageTagsEditor(QDockWidget):
                                          tag_separator)
         self.image_tags_list = ImageTagsList(self.image_tag_list_model)
         self.token_count_label = QLabel()
+        # TagBench's Image Tags pane (src/App.tsx): a lock note on completed
+        # images and a Natural language button that swaps the tag list for a
+        # freeform caption.
         self.lock_label = QLabel(
-            'Tags are locked because this image is marked complete. '
-            'Press Ctrl+K to unlock.')
+            'Tags are locked. Mark the image incomplete to edit them.')
         self.lock_label.setWordWrap(True)
-        self.lock_label.setStyleSheet(
-            'color: #ffffff; background: #2e7d32; border-radius: 6px; '
-            'padding: 6px;')
+        self.lock_label.setStyleSheet('font-size: 13px;')
+        self.lock_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
         self.lock_label.hide()
         self.is_locked = False
-        self.nl_toggle_button = QPushButton('Natural Language')
+        self.nl_toggle_button = QPushButton('Natural language')
         self.nl_toggle_button.setCheckable(True)
-        self.nl_toggle_button.setToolTip(
-            'A free-form caption saved under the tags, after the first line '
-            'break of the caption file')
         self.nl_text_edit = NaturalLanguageEdit()
         self.nl_text_edit.setPlaceholderText(
-            'Free-form caption. Saved under the tags, after the first line '
+            'Freeform caption. Saved under the tags, after the first line '
             'break.')
         self.nl_text_edit.setTabChangesFocus(True)
-        self.nl_text_edit.setMaximumHeight(
-            self.nl_text_edit.fontMetrics().lineSpacing() * 6 + 16)
         self.nl_image: Image | None = None
-        settings = get_settings()
-        self.nl_toggle_button.setChecked(settings.value(
-            'show_natural_language', defaultValue=False, type=bool))
-        self.nl_toggle_button.toggled.connect(
-            lambda checked: settings.setValue('show_natural_language',
-                                              checked))
         self.nl_toggle_button.toggled.connect(self.update_nl_visibility)
         self.nl_text_edit.editing_finished.connect(self.commit_nl)
-        if separator_uses_newline(tag_separator):
+        self.is_nl_unavailable = separator_uses_newline(tag_separator)
+        if self.is_nl_unavailable:
             # The whole caption file is tags when the separator is a line
             # break, so there is nowhere to put the natural language.
-            self.nl_toggle_button.setChecked(False)
             self.nl_toggle_button.setEnabled(False)
         # A container widget is required to use a layout with a `QDockWidget`.
         container = QWidget()
         layout = QVBoxLayout(container)
+        head_layout = QHBoxLayout()
+        head_layout.addStretch()
+        head_layout.addWidget(self.nl_toggle_button)
+        layout.addLayout(head_layout)
         layout.addWidget(self.lock_label)
         layout.addWidget(self.tag_input_box)
-        layout.addWidget(self.image_tags_list, stretch=3)
-        footer_layout = QHBoxLayout()
-        footer_layout.addWidget(self.token_count_label, stretch=1)
-        footer_layout.addWidget(self.nl_toggle_button)
-        layout.addLayout(footer_layout)
-        layout.addWidget(self.nl_text_edit, stretch=1)
+        layout.addWidget(self.image_tags_list)
+        layout.addWidget(self.nl_text_edit)
+        layout.addWidget(self.token_count_label)
         self.setWidget(container)
         self.update_nl_visibility()
 
@@ -302,7 +293,12 @@ class ImageTagsEditor(QDockWidget):
 
     @Slot()
     def update_nl_visibility(self):
-        self.nl_text_edit.setVisible(self.nl_toggle_button.isChecked())
+        is_nl_mode = self.nl_toggle_button.isChecked()
+        if not is_nl_mode:
+            self.commit_nl()
+        self.nl_text_edit.setVisible(is_nl_mode)
+        self.tag_input_box.setVisible(not is_nl_mode)
+        self.image_tags_list.setVisible(not is_nl_mode)
 
     @Slot()
     def commit_nl(self):
@@ -331,6 +327,7 @@ class ImageTagsEditor(QDockWidget):
             QAbstractItemView.DragDropMode.NoDragDrop if is_locked
             else QAbstractItemView.DragDropMode.InternalMove)
         self.nl_text_edit.setReadOnly(is_locked)
+        self.nl_toggle_button.setDisabled(is_locked or self.is_nl_unavailable)
 
     def refresh_lock(self):
         if self.image_index is None or not self.image_index.isValid():

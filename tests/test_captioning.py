@@ -25,7 +25,7 @@ def test_limit_tags():
 
 
 def test_tag2caption_preset_uses_existing_tags():
-    preset = get_preset('Tag2Caption (caption from existing tags)')
+    preset = get_preset('Tag2Caption')
     assert preset.caption_position == CaptionPosition.NL_REPLACE
     assert not preset.split_tags
     image = Image(Path('x.png'), None, ['cat', 'solo'])
@@ -39,3 +39,12 @@ def test_default_preset_is_prompt_helper_default():
     default = PROMPT_PRESETS[0]
     assert default.user_prompt == DEFAULT_USER_PROMPT
     assert default.system_prompt == DEFAULT_SYSTEM_PROMPT
+
+
+def test_joycaption_tags_preset_is_tagbench_tag_instructions():
+    from auto_captioning.prompt_presets import short_tags_user_prompt
+    assert get_preset('JoyCaption \u2014 tags').uses_max_tags
+    assert short_tags_user_prompt(40) == (
+        'List only what is visible, as comma-separated booru tags. '
+        'No sentences. No artist names, signatures, or handles. '
+        'At most 40 tags. Put the most specific tags first.')

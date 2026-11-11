@@ -8,6 +8,11 @@ from models.image_list_model import ImageListModel
 from utils.image import Image
 
 
+def is_missing_caption(image: Image) -> bool:
+    """TagBench's "Missing Tags": the caption file has nothing in it."""
+    return not image.tags and not image.nl.strip()
+
+
 class ProxyImageListModel(QSortFilterProxyModel):
     def __init__(self, image_list_model: ImageListModel,
                  tokenizer: PreTrainedTokenizerBase, tag_separator: str):
@@ -16,6 +21,8 @@ class ProxyImageListModel(QSortFilterProxyModel):
         self.tokenizer = tokenizer
         self.tag_separator = tag_separator
         self.filter: list | None = None
+        # Show only images without a caption ("Missing Tags").
+        self.missing_only = False
 
     def does_image_match_filter(self, image: Image,
                                 filter_: list | str) -> bool:
@@ -67,14 +74,18 @@ class ProxyImageListModel(QSortFilterProxyModel):
 
     def filterAcceptsRow(self, source_row: int,
                          source_parent: QModelIndex) -> bool:
-        # Show all images if there is no filter.
-        if self.filter is None:
-            return True
         image_index = self.sourceModel().index(source_row, 0)
         image: Image = self.sourceModel().data(image_index,
                                                Qt.ItemDataRole.UserRole)
+        if self.missing_only and not is_missing_caption(image):
+            return False
+        # Show all images if there is no filter.
+        if self.filter is None:
+            return True
         return self.does_image_match_filter(image, self.filter)
 
     def is_image_in_filtered_images(self, image: Image) -> bool:
+        if self.missing_only and not is_missing_caption(image):
+            return False
         return (self.filter is None
                 or self.does_image_match_filter(image, self.filter))

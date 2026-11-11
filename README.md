@@ -15,16 +15,6 @@ This fork of [TagGUI](https://github.com/jhc13/taggui) by jhc13 (based on v1.33.
 - **Undo and redo (Ctrl+Z / Ctrl+Y).** One history covers tag edits and image edits, so Ctrl+Z brings back the image as it was before the last crop or removal and Ctrl+Y redoes it. Image edit history is kept in memory for the current session.
 - **JTP-3 Hydra tagger.** RedRocket's e621 tagger (Apache-2.0) in the Auto-Captioner list, run locally on the GPU with the WD tagger settings (minimum score, maximum tags, tags to exclude). Uses an existing local copy (`TAGGUI_JTP3_DIR`, or `jtp-3-hydra` in the models folder below) or downloads it once.
 - **Per-user models folder on every OS.** The big-lama and JTP-3 models are downloaded on first use to `%LOCALAPPDATA%\taggui\models` on Windows, `~/.local/share/taggui/models` on Linux (or `$XDG_DATA_HOME/taggui/models`), and `~/Library/Application Support/taggui/models` on macOS. Set `TAGGUI_MODELS_DIR` to use a different folder.
-- **Image cards and filter bubbles.** The image list shows thumbnail cards with the file name (View > *Show Tags in Image List* brings back the old list). Filters are removable bubbles at the top of the Images pane: type a tag to include it (green) or `-tag` to hide it (red), click a bubble to flip it, × to remove it, plus *Untagged* and *Clear* buttons. *Text* shows the full filter box for advanced filters; right-click stacking still works and shows up as bubbles.
-- **Mark Complete (Ctrl+K).** Locks the selected images' tags so no edit, bulk action or undo touches them, with a check badge on the card. Saved per folder in the user data folder, not in your dataset.
-- **Natural-language captions.** *Natural Language* under Image Tags shows a free-form caption box. It is saved in the same .txt, after the first line break (tags stay on the first line), is undoable, and is turned off when the tag separator contains a line break.
-- **Tag category colors.** Right-click a tag > *Category Color* to give it a colored bar in Image Tags and All Tags.
-- **Sort All Tags by tokens** (CLIP token count).
-- **Prompt presets for LM Studio/Ollama.** *Load Prompt Preset* fills in the prompt, system prompt, caption position and temperature: e621 tags (the default), short booru tags, a natural-language caption, and *Tag2Caption*, which writes a caption from the image's existing tags. New caption positions *Replace/Add to natural-language caption*, and a *Max tags* limit.
-- **Find Duplicate Images (Ctrl+Shift+D).** Finds identical and look-alike images locally (shape and color fingerprints, with a strictness slider), lets you pick which to keep, can copy the dropped images' tags onto the kept ones, and moves the rest (and their .txt files) to the trash.
-- **Strip @ Tags** (Edit menu) removes every tag that starts with `@`.
-- **Export Dataset as Zip** (Ctrl+Shift+E) and **Export Wildcard File** (one caption per line) in the File menu.
-- **Hotkey hints** in the status bar for whichever pane you are in.
 
 The Remove brush and JTP-3 tagger were built and tested on Windows with an NVIDIA GPU. They should work on Linux too, but haven't been tested there yet; please open an issue if something breaks.
 
